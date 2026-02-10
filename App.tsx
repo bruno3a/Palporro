@@ -312,20 +312,43 @@ const arraysEqual = (a: string[], b: string[]) => {
     const ctx = initAudio();
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
-      
-      // Configurar el prompt según la voz seleccionada
-      const voiceContext = selectedVoice === 'Puck' 
-        ? 'Habla como una mujer argentina sensual y conocedora del automovilismo, con acento rioplatense marcado.'
-        : 'Habla como un hombre argentino cínico que no sabe nada de automovilismo, con acento rioplatense marcado y tono sarcástico.';
-      
-      const prompt = `${voiceContext}\n\n${currentScript}`;
-      
+
+      // Preparar instrucciones de estilo (persona) para cada voz
+      const femaleInstruction = `Habla como una mujer locutora de radio nocturna argentina, especializada en automovilismo. Voz de mujer, tono grave y sedoso; transmití seguridad, experiencia y pasión por los motores. Ritmo acelerado y cadencioso, sensual pero sobrio; sin exageraciones. Usá modismos argentinos suaves y naturales (ej.: \"che\", \"piola\"), sin caricatura.`;
+      const maleInstruction = `Actuá como un hombre porteño, con poco conocimiento técnico de autos y mucho cinismo. Tono irónico, humor seco y pausado. Mantené un acento rioplatense leve. Evitá tecnicismos y mostrale al oyente duda y sarcasmo sutil.`;
+
+      const voiceInstruction = selectedVoice === 'Achernar' ? femaleInstruction : maleInstruction;
+
+      // Escapar texto simple para colocar dentro de SSML (mínimo)
+      const escapeForSsml = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+      // SSML base: ajusta rate/pitch/volume para cada voz y agrega pausas y énfasis
+      const ssmlBody = (() => {
+        const escaped = escapeForSsml(currentScript);
+        if (selectedVoice === 'Achernar') {
+          return `<speak><prosody rate=\"97%\" pitch=\"-2st\" volume=\"+1dB\">${escaped.replace(/\n\n/g, '<break time=\"260ms\"/>')}</prosody></speak>`;
+        }
+        // Voz masculina cínica
+        return `<speak><prosody rate=\"98%\" pitch=\"-0.5st\" volume=\"+0dB\">${escaped.replace(/\n\n/g, '<break time=\"200ms\"/>')}</prosody></speak>`;
+      })();
+
+      // Componer prompt: instrucción de estilo + SSML (el SDK/endpoint de TTS debe respetar SSML en input)
+      const prompt = `${voiceInstruction}\n\n${ssmlBody}`;
+
+      // speechConfig: solo enviamos la configuración de voz soportada por la API.
+      // Control de rate/pitch/volume lo hacemos mediante SSML (prosody) porque
+      // el endpoint rechaza campos desconocidos como speakingRate/pitch/volumeGainDb.
+      const speechConfig: any = {
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } }
+      };
+
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
+        // Enviamos el SSML combinado en parts.text; el SDK TTS suele aceptar SSML en el texto de entrada
         contents: [{ parts: [{ text: prompt }] }],
         config: {
           responseModalities: ["AUDIO"],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
+          speechConfig,
         },
       });
       const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
