@@ -1,0 +1,7 @@
+{
+  "name": "Palporro Racing",
+  "description": "An interactive tool to generate and live-perform a gritty Argentine radio advertisement for the Palporro Racing Championship using Gemini 2.5 Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

@@ -1,0 +1,7 @@
+* {
+  cursor: url('/GTR34.webp') 16 16, auto;
+}
+
+button, a, input, select, textarea {
+  cursor: url('/GTR34.webp') 16 16, pointer;
+}

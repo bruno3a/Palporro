@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <!-- debe ser el PRIMER script, antes del bundle de Vite -->
+    <script src="/config.js"></script><meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Palporro Racing - La Anti-Liga</title>
+    <meta name="description" content="Palporro Racing">
+    <link rel="icon" type="image/jpeg" href="/Logo.jpg">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Runtime config: if your host can inject values at deploy time, populate window.__PALPORRO_CONFIG -->
+    <script>
+      // Example: your deployment system can replace these values or inject a similar script
+      // window.__PALPORRO_CONFIG = {
+      //   VITE_SUPABASE_URL: 'https://zalawzqwgekblpqrumdl.supabase.co',
+      //   VITE_SUPABASE_ANON_KEY: 'eyJ...'
+      // };
+    </script>
+</head>
+<body class="bg-zinc-950 text-zinc-100">
+  <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
