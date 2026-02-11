@@ -566,11 +566,16 @@ const arraysEqual = (a: string[], b: string[]) => {
     const votesForDate = votingState.allVotes.filter(v => v.days.includes(dayName) && v.times.includes(time)).length;
     const isDefinitive = (votesForDate >= 4) || (daysUntil <= 1 && votesForDate >= 3);
 
+    // Desacuerdo: hay 2+ votos pero ninguna combinación día+hora tiene al menos 2
+    const hasDisagreement = votingState.allVotes.length >= 2 && votesForDate < 2;
+    // Con 1 solo voto se muestra tentativa normalmente
+
     return {
       day: dayName,
       time,
       date: raceDate,
       isDefinitive,
+      hasDisagreement,
       dayVotes,
       timeVotes,
       votesForDate,
@@ -1203,11 +1208,83 @@ const arraysEqual = (a: string[], b: string[]) => {
                   {/* Mostrar fecha tentativa/definitiva */}
                   {(() => {
                     const nextRace = getNextRaceInfo();
+
+                    // Sin votos aún
+                    if (!nextRace || nextRace.totalVotes === 0) {
+                      return (
+                        <p className="text-[9px] text-zinc-600 uppercase font-black tracking-widest italic mt-2">
+                          * Haz clic en una pista para ver resultados
+                        </p>
+                      );
+                    }
+
+                    // Hay votos pero no hay acuerdo (ninguna combinación tiene 2+)
+                    if (nextRace.hasDisagreement) {
+                      return (
+                        <div className="mt-3 relative group/disagreement">
+                          <div className="p-4 rounded-xl border-2 bg-red-950/20 border-red-600/40 cursor-help transition-all duration-200 group-hover/disagreement:border-red-500/70 group-hover/disagreement:bg-red-950/30">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                                </svg>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-red-500">
+                                  No hay acuerdo
+                                </span>
+                              </div>
+                              <span className="text-[9px] text-zinc-600 font-black uppercase tracking-wider opacity-0 group-hover/disagreement:opacity-100 transition-opacity duration-200">
+                                ver votos ↑
+                              </span>
+                            </div>
+                            <p className="text-xs text-zinc-500">
+                              {nextRace.totalVotes} pilotos votaron sin coincidir
+                            </p>
+                          </div>
+
+                          {/* Popover con detalle de votos */}
+                          <div className="absolute bottom-full left-0 right-0 mb-2 z-50 opacity-0 pointer-events-none group-hover/disagreement:opacity-100 group-hover/disagreement:pointer-events-auto transition-all duration-200 translate-y-1 group-hover/disagreement:translate-y-0">
+                            <div className="bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl overflow-hidden">
+                              <div className="px-4 py-3 border-b border-zinc-800 bg-zinc-950/60">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                                  Votos actuales
+                                </span>
+                              </div>
+                              <div className="divide-y divide-zinc-800/50">
+                                {votingState.allVotes.map(vote => (
+                                  <div key={vote.pilot} className="px-4 py-3 flex flex-col gap-1.5">
+                                    <span className="text-[11px] font-black uppercase text-zinc-200">
+                                      {vote.pilot}
+                                    </span>
+                                    <div className="flex flex-wrap gap-1">
+                                      {vote.days.map(day => (
+                                        <span key={day} className="text-[9px] font-black px-2 py-0.5 rounded-full bg-red-600/20 text-red-400 border border-red-600/30">
+                                          {day}
+                                        </span>
+                                      ))}
+                                      {vote.times.map(time => (
+                                        <span key={time} className="text-[9px] font-black px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
+                                          {time}hs
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                            {/* Flecha del popover */}
+                            <div className="w-3 h-3 bg-zinc-900 border-r border-b border-zinc-700 rotate-45 mx-auto -mt-1.5"></div>
+                          </div>
+                        </div>
+                      );
+                    }
+
+
+                    // Hay acuerdo — mostrar fecha tentativa o confirmada
                     if (nextRace && nextTrackIndex !== -1) {
                       return (
                         <div className={`mt-3 p-4 rounded-xl border-2 ${
-                          nextRace.isDefinitive 
-                            ? 'bg-green-950/20 border-green-600/50' 
+                          nextRace.isDefinitive
+                            ? 'bg-green-950/20 border-green-600/50'
                             : 'bg-orange-950/20 border-orange-600/50'
                         }`}>
                           <div className="flex items-center gap-2 mb-2">
@@ -1227,16 +1304,13 @@ const arraysEqual = (a: string[], b: string[]) => {
                             {nextRace.day} {nextRace.date.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' })} • {nextRace.time}hs
                           </p>
                           <p className="text-[10px] text-zinc-600 mt-2">
-                            {nextRace.dayVotes} votos ({nextRace.totalVotes} pilotos votaron)
+                            {nextRace.votesForDate} de {nextRace.totalVotes} pilotos coinciden
                           </p>
                         </div>
                       );
                     }
-                    return (
-                      <p className="text-[9px] text-zinc-600 uppercase font-black tracking-widest italic mt-2">
-                        * Haz clic en una pista para ver resultados
-                      </p>
-                    );
+
+                    return null;
                   })()}
                 </div>
                 <div className="space-y-3 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar flex-1">
