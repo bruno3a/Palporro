@@ -13,6 +13,11 @@ export const VOICE_OPTIONS = [
   { id: 'Charon', label: 'El Cínico (Hombre)', description: 'Voz masculina sarcástica sin conocimiento en automovilismo.' }
 ];
 
+// Artistic aliases used for display in place of real commentator/pilot names
+export const ARTISTIC_ALIASES = [
+  'El Turbo', 'La Rata', 'Don Pistón', 'La Culebra', 'Miss Humo', 'El Zonda', 'La Pantera', 'Capitán Neumático', 'Sombra Verde', 'La Llanta', 'Maestro V8'
+];
+
 export const ANALYSIS_SYSTEM_INSTRUCTION = `
 Eres el Comisario Deportivo y Analista de Palporro Racing. 
 Tu tarea es analizar los datos de Assetto Corsa y generar DOS cosas:
@@ -38,7 +43,7 @@ Genera 3 versiones de un spot de radio para el "Campeonato Palporro Racing 2026"
 USA ESTA INFO REAL PARA EL GUION:
 - Pistas recorridas y cuál es la siguiente cita.
 - Menciona a los pilotos que no dan señales de vida (asistencia baja).
-- Menciona a los que manejan sucio (muchas incidencias).
+- Menciona a los que manejan sucio (muchas incidencias), de forma aleatoria.
 - Menciona el nivel de "FiaScore" de la liga.
 
 IMPORTANTE: El guion será leído por una voz TTS con acento rioplatense. 

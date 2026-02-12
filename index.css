@@ -5,3 +5,145 @@
 button, a, input, select, textarea {
   cursor: url('/GTR34.webp') 16 16, pointer;
 }
+
+/* Restored small set of utility-like styles requested */
+* , *::after, *::before {
+  box-sizing: border-box;
+  border-width: 0;
+  border-style: solid;
+  border-color: #e5e7eb;
+}
+.text-red-500 {
+  --tw-text-opacity: 1;
+  color: rgb(239 68 68 / var(--tw-text-opacity, 1));
+}
+.tracking-widest { letter-spacing: 0.1em; }
+.uppercase { text-transform: uppercase; }
+.font-black { font-weight: 900; }
+.text-\[10px\] { font-size: 10px; }
+
+/* FiaScore: 30% shorter visual height and split coloring to hint both SCORE and FIASCO */
+/* FiaScore legacy styling replaced by split FIASCO / SCORE spans */
+.fiascore {
+  transform: scaleY(0.7);
+  transform-origin: center;
+  display: inline-block;
+  position: relative;
+  font-weight: 900;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* FIASCO (left) - forced red color */
+.fiasco {
+  color: #e74c3c; /* red */
+  display: inline-block;
+  margin-right: 6px;
+}
+
+/* SCORE (right) - keep original gradient feel */
+.score {
+  display: inline-block;
+  background-image: linear-gradient(90deg, #27ae60 0%, #f1c40f 60%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Underline only under SCORE text */
+.score {
+  border-bottom: 3px solid currentColor;
+  padding-bottom: 2px;
+}
+
+/* Dark gaming + glassmorphism styles for disagreement card & popover */
+.dark-gaming-card {
+  background: linear-gradient(180deg, rgba(12,12,12,0.55), rgba(8,8,8,0.45));
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.03);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
+}
+.neon-red-outline {
+  box-shadow: 0 0 0 1px rgba(231,76,60,0.06), 0 6px 30px rgba(231,76,60,0.07), 0 2px 6px rgba(231,76,60,0.03) inset;
+}
+.popover-box {
+  background: linear-gradient(180deg, rgba(6,6,6,0.9), rgba(12,12,12,0.85));
+  border: 1px solid rgba(255,255,255,0.03);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.7), 0 2px 8px rgba(0,0,0,0.6) inset;
+}
+
+.badge-day {
+  font-weight: 800;
+  font-size: 9px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(231,76,60,0.12), rgba(231,76,60,0.06));
+  color: #ffb4b0;
+  border: 1px solid rgba(231,76,60,0.18);
+}
+.badge-time {
+  font-weight: 800;
+  font-size: 9px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(40,40,40,0.6), rgba(20,20,20,0.5));
+  color: #cbd5e1;
+  border: 1px solid rgba(255,255,255,0.03);
+}
+
+/* Generic glass-alert variants for different severities */
+.glass-alert {
+  background: linear-gradient(180deg, rgba(12,12,12,0.55), rgba(8,8,8,0.45));
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.03);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
+}
+.glass-alert--danger { border-left: 4px solid rgba(231,76,60,0.9); box-shadow: 0 6px 40px rgba(231,76,60,0.06); }
+.glass-alert--warning { border-left: 4px solid rgba(243,156,18,0.9); box-shadow: 0 6px 40px rgba(243,156,18,0.05); }
+.glass-alert--success { border-left: 4px solid rgba(46,204,113,0.9); box-shadow: 0 6px 40px rgba(46,204,113,0.04); }
+.glass-alert--neutral { border-left: 4px solid rgba(120,120,120,0.6); box-shadow: 0 6px 40px rgba(0,0,0,0.4); }
+
+/* More specific styles mirroring the screenshot: voting list and disagreement box */
+.votes-popover { width: 360px; }
+.votes-popover .pilot-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 16px; }
+.votes-popover .pilot-row + .pilot-row { border-top: 1px solid rgba(255,255,255,0.02); }
+.votes-popover .pilot-name { font-weight: 900; color: #e6e6e6; font-size: 12px; text-transform: uppercase; }
+.votes-popover .badges { display:flex; gap:8px; flex-wrap:wrap; }
+
+.disagreement-alert {
+  margin-top: 8px;
+  border: 1px solid rgba(231,76,60,0.65);
+  background: linear-gradient(180deg, rgba(39,10,12,0.65), rgba(24,8,8,0.55));
+  padding: 14px 16px;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(231,76,60,0.06), inset 0 1px 0 rgba(255,255,255,0.02);
+}
+.disagreement-alert .alert-title { display:flex; align-items:center; gap:10px; color:#ff8b87; font-weight:900; text-transform:uppercase; font-size:13px; }
+.disagreement-alert .alert-sub { color:#c9c9c9; font-size:12px; margin-top:6px; }
+.disagreement-arrow { width: 100%; display:flex; justify-content:center; margin-top:-10px; }
+.disagreement-arrow .triangle { width:14px; height:14px; background: linear-gradient(180deg, rgba(12,12,12,0.95), rgba(8,8,8,0.9)); border-right:1px solid rgba(255,255,255,0.02); border-bottom:1px solid rgba(255,255,255,0.02); transform: rotate(45deg); box-shadow: 0 6px 18px rgba(0,0,0,0.6); }
+
+/* compact pill styles to match screenshot */
+.pill-day { background: rgba(231,76,60,0.15); color: #ffb4b0; padding:4px 10px; border-radius:999px; font-weight:800; font-size:11px; border:1px solid rgba(231,76,60,0.35); }
+.pill-time { background: rgba(255,255,255,0.02); color:#cbd5e1; padding:4px 10px; border-radius:999px; font-weight:800; font-size:11px; border:1px solid rgba(255,255,255,0.03); }
+
+/* Minimal toast for easter egg */
+.egg-toast {
+  position: fixed;
+  left: 50%;
+  top: 10%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.85);
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: 8px;
+  z-index: 9999;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  font-weight: 700;
+}
+
+.floating-player .script-hidden { max-height: 0; overflow: hidden; }
+.archive-list .script-hidden { max-height: 0; overflow: hidden; }

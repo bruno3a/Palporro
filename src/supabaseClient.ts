@@ -28,10 +28,14 @@ export function getEnvironment(): string {
     || 'PROD';
 }
 
+export interface TimeSlot {
+  day: string;
+  time: string;
+}
+
 export interface VoteData {
   pilot: string;
-  days: string[];
-  times: string[];
+  slots: TimeSlot[];
   ip?: string | null;
   timestamp: number;
 }
@@ -66,8 +70,7 @@ export async function addVote(
         .from('palporro_votes')
         .upsert({
           pilot: voteData.pilot,
-          days: voteData.days,
-          times: voteData.times,
+          slots: voteData.slots,
           ip: voteData.ip || null,
           timestamp: voteData.timestamp,
           environment
@@ -93,8 +96,7 @@ export async function addVote(
       const url = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/palporro_votes?on_conflict=pilot,environment`;
       const payload = {
         pilot: voteData.pilot,
-        days: voteData.days,
-        times: voteData.times,
+        slots: voteData.slots,
         ip: voteData.ip || null,
         timestamp: voteData.timestamp,
         environment
@@ -126,7 +128,7 @@ export async function addVote(
     }
   }
 
-  console.error('Supabase not available and no REST fallback configured (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY missing)');
+  console.error('Supabase not available and no REST fallback configured');
   return false;
 }
 
@@ -161,28 +163,22 @@ export function subscribeToVotes(
   };
 }
 
-// Obtener estadísticas de votación
+// Obtener estadísticas de votación (ahora basado en slots)
 export async function getVotingStats(environment: string = 'TEST') {
   const votes = await getVotes(environment);
 
-  const dayCount: Record<string, number> = {};
-  const timeCount: Record<string, number> = {};
+  const slotCount: Record<string, number> = {};
 
   votes.forEach(vote => {
-    vote.days.forEach(day => {
-      dayCount[day] = (dayCount[day] || 0) + 1;
-    });
-    vote.times.forEach(time => {
-      timeCount[time] = (timeCount[time] || 0) + 1;
+    (vote.slots || []).forEach(slot => {
+      const key = `${slot.day}|${slot.time}`;
+      slotCount[key] = (slotCount[key] || 0) + 1;
     });
   });
 
   return {
     totalVotes: votes.length,
-    dayCount,
-    timeCount,
-    mostPopularDay: Object.entries(dayCount).sort((a, b) => b[1] - a[1])[0]?.[0],
-    mostPopularTime: Object.entries(timeCount).sort((a, b) => b[1] - a[1])[0]?.[0]
+    slotCount
   };
 }
 
