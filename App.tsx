@@ -666,15 +666,36 @@ const arraysEqual = (a: string[], b: string[]) => {
       'Jueves': 4
     };
 
+    // Use Argentina timezone when computing the next occurrence so "día siguiente" is relative
     const now = new Date();
+    const argNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
     const targetDay = dayMap[dayName];
-    const currentDay = now.getDay();
-  
-    let daysUntil = targetDay - currentDay;
-    if (daysUntil <= 0) daysUntil += 7;
+    const currentDay = argNow.getDay();
 
-    const raceDate = new Date(now);
-    raceDate.setDate(now.getDate() + daysUntil);
+    // Compute daysUntil as the nearest future occurrence of targetDay.
+    // If targetDay === currentDay we only consider "today" if the target time is still in the future
+    let daysUntil = targetDay - currentDay;
+    if (daysUntil < 0) daysUntil += 7;
+
+    // If the target day is today (daysUntil === 0) check the time: if the candidate time already passed today,
+    // treat it as next week's occurrence (daysUntil = 7). This ensures we pick the next future date for that day/time.
+    if (daysUntil === 0) {
+      // parse time like '20:00'
+      const [hh, mm] = (time || '').split(':').map((v: string) => parseInt(v, 10) || 0);
+      const candidate = new Date(argNow);
+      candidate.setHours(hh, mm, 0, 0);
+      if (candidate.getTime() <= argNow.getTime()) {
+        daysUntil = 7; // next week's occurrence
+      } else {
+        daysUntil = 0; // later today -> keep today
+      }
+    }
+
+    const raceDate = new Date(argNow);
+    raceDate.setDate(argNow.getDate() + daysUntil);
+    // ensure raceDate has the proper hour/minute of the chosen time
+    const [raceH, raceM] = (time || '').split(':').map((v: string) => parseInt(v, 10) || 0);
+    raceDate.setHours(raceH, raceM, 0, 0);
 
     // Verificar si es definitivo:
     // - Si al menos 4 pilotos votaron la misma combinación (día+hora) => definitivo inmediatamente.
@@ -1511,30 +1532,56 @@ const arraysEqual = (a: string[], b: string[]) => {
                 Votos actuales
               </span>
             </div>
-            <div className="divide-y divide-zinc-800/50">
-              {(votingState.allVotes ?? []).map(vote => {
-                const days = (vote as any).days ?? ((vote as any).slots ? (vote as any).slots.map((s: any) => s.day) : []);
-                const times = (vote as any).times ?? ((vote as any).slots ? (vote as any).slots.map((s: any) => s.time) : []);
-                return (
-                  <div key={vote.pilot} className="px-4 py-3 flex flex-col gap-1.5">
-                    <span className="text-[11px] font-black uppercase text-zinc-200">
-                      {vote.pilot}
-                    </span>
-                    <div className="flex flex-wrap gap-1">
-                      {(days ?? []).map((day: string) => (
-                        <span key={day} className="text-[9px] font-black px-2 py-0.5 rounded-full bg-red-600/20 text-red-400 border border-red-600/30">
-                          {day}
-                        </span>
-                      ))}
-                      {(times ?? []).map((time: string) => (
-                        <span key={time} className="text-[9px] font-black px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
-                          {time}hs
-                        </span>
-                      ))}
+            <div className="divide-y divide-zinc-800/50 px-4 py-2">
+              {/* Mostrar votos agrupados por día -> horario -> pilotos */}
+              {(() => {
+                const map: Record<string, Record<string, string[]>> = {};
+                (votingState.allVotes ?? []).forEach(vote => {
+                  const pilot = vote.pilot;
+                  (vote.slots || []).forEach((s: any) => {
+                    if (!s || !s.day) return;
+                    if (!map[s.day]) map[s.day] = {};
+                    if (!map[s.day][s.time]) map[s.day][s.time] = [];
+                    if (!map[s.day][s.time].includes(pilot)) map[s.day][s.time].push(pilot);
+                  });
+                });
+
+                // compute max count per day so we can highlight the leading timeslot
+                const maxPerDay: Record<string, number> = {};
+                Object.keys(map).forEach(d => {
+                  const times = Object.values(map[d]);
+                  let m = 0;
+                  times.forEach(arr => { if (arr.length > m) m = arr.length; });
+                  maxPerDay[d] = m;
+                });
+
+                return VOTING_DAYS.map(day => {
+                  const times = map[day] ? Object.entries(map[day]) : [];
+                  return (
+                    <div key={day} className="py-2">
+                      <div className="text-[11px] font-black uppercase text-zinc-200 mb-2">{day}</div>
+                      {times.length === 0 ? (
+                        <div className="text-[9px] text-zinc-500">No hay votos para este día.</div>
+                      ) : (
+                        <div className="flex flex-col gap-2">
+                          {times.sort((a,b) => a[0].localeCompare(b[0])).map(([time, pilots]) => {
+                            const isTop = pilots.length > 0 && pilots.length === (maxPerDay[day] || 0);
+                            return (
+                              <div key={time} className="flex flex-col">
+                                <div className="flex items-center gap-3">
+                                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${isTop ? 'bg-red-600/20 text-red-400 border border-red-600/30' : 'bg-zinc-800 text-zinc-300 border border-zinc-700'}`}>{time}hs</span>
+                                  <span className={`text-[9px] ${isTop ? 'text-red-400 font-black' : 'text-zinc-400'}`}>{pilots.length} piloto{pilots.length !== 1 ? 's' : ''}</span>
+                                </div>
+                                <div className={`ml-10 ${isTop ? 'text-[12px] font-bold text-zinc-100' : 'text-[11px] text-zinc-500'}`}>{pilots.join(', ')}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                });
+              })()}
             </div>
           </div>
           {/* Flecha del popover */}
@@ -1590,30 +1637,44 @@ const arraysEqual = (a: string[], b: string[]) => {
                   Votos actuales
                 </span>
               </div>
-              <div className="divide-y divide-zinc-800/50">
-                {(votingState.allVotes ?? []).map(vote => {
-                  const days = (vote as any).days ?? ((vote as any).slots ? (vote as any).slots.map((s: any) => s.day) : []);
-                  const times = (vote as any).times ?? ((vote as any).slots ? (vote as any).slots.map((s: any) => s.time) : []);
-                  return (
-                    <div key={vote.pilot} className="px-4 py-3 flex flex-col gap-1.5">
-                      <span className="text-[11px] font-black uppercase text-zinc-200">
-                        {vote.pilot}
-                      </span>
-                      <div className="flex flex-wrap gap-1">
-                        {(days ?? []).map((day: string) => (
-                          <span key={day} className="text-[9px] font-black px-2 py-0.5 rounded-full bg-orange-600/20 text-orange-400 border border-orange-600/30">
-                            {day}
-                          </span>
-                        ))}
-                        {(times ?? []).map((time: string) => (
-                          <span key={time} className="text-[9px] font-black px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
-                            {time}hs
-                          </span>
-                        ))}
+              <div className="divide-y divide-zinc-800/50 px-4 py-2">
+                {/* Agrupar votos por día -> horario -> pilotos (igual que en el otro popover) */}
+                {(() => {
+                  const map: Record<string, Record<string, string[]>> = {};
+                  (votingState.allVotes ?? []).forEach(vote => {
+                    const pilot = vote.pilot;
+                    (vote.slots || []).forEach((s: any) => {
+                      if (!s || !s.day) return;
+                      if (!map[s.day]) map[s.day] = {};
+                      if (!map[s.day][s.time]) map[s.day][s.time] = [];
+                      if (!map[s.day][s.time].includes(pilot)) map[s.day][s.time].push(pilot);
+                    });
+                  });
+
+                  return VOTING_DAYS.map(day => {
+                    const times = map[day] ? Object.entries(map[day]) : [];
+                    return (
+                      <div key={day} className="py-2">
+                        <div className="text-[11px] font-black uppercase text-zinc-200 mb-2">{day}</div>
+                        {times.length === 0 ? (
+                          <div className="text-[9px] text-zinc-500">No hay votos para este día.</div>
+                        ) : (
+                          <div className="flex flex-col gap-2">
+                            {times.sort((a,b) => a[0].localeCompare(b[0])).map(([time, pilots]) => (
+                              <div key={time} className="flex flex-col">
+                                <div className="flex items-center gap-3">
+                                  <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-300 border border-zinc-700">{time}hs</span>
+                                  <span className="text-[9px] text-zinc-400">{pilots.length} piloto{pilots.length !== 1 ? 's' : ''}</span>
+                                </div>
+                                <div className="text-[11px] text-zinc-500 ml-10">{pilots.join(', ')}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
             </div>
             {/* Flecha del popover */}
