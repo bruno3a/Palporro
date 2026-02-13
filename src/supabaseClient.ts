@@ -65,6 +65,28 @@ export interface RaceHistory {
   };
 }
 
+// Helper: normalize race objects returned by Supabase so the UI can rely on
+// snake_case properties (relevant_data, session_info) even if the DB/SDK
+// or external input returned camelCase names (relevantData, sessionInfo).
+const normalizeRace = (r: any): RaceHistory | null => {
+  if (!r) return null;
+
+  // If the API returned camelCase fields, mirror them to snake_case expected by UI
+  if (r.relevantData && !r.relevant_data) {
+    r.relevant_data = r.relevantData;
+  }
+  if (r.sessionInfo && !r.session_info) {
+    r.session_info = r.sessionInfo;
+  }
+
+  // Also ensure nested race_results is an array
+  if (!r.race_results && Array.isArray(r.raceResults)) {
+    r.race_results = r.raceResults;
+  }
+
+  return r as RaceHistory;
+};
+
 export let supabase = (supabaseUrl && supabaseAnonKey)
   ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
@@ -106,6 +128,78 @@ export async function getVotes(environment: string = 'TEST'): Promise<VoteData[]
   }
 
   return data || [];
+}
+
+// Obtener votos relevantes para la próxima carrera
+// Filtra por timestamp usando la fecha de inicio de votación (guardada en localStorage
+// como 'palporro_voting_start') o, en su defecto, calcula el último viernes 23:00
+// en zona local. Esto permite ignorar votos antiguos sin modificar la base de datos.
+export async function getRelevantVotes(environment: string = 'TEST'): Promise<VoteData[]> {
+  try {
+    const all = await getVotes(environment);
+
+    // Determinar cutoff
+    let cutoff: Date | null = null;
+    try {
+      // Respeta un override de desarrollo si está activado
+      const devEnabled = typeof localStorage !== 'undefined' ? localStorage.getItem('palporro_dev_cutoff_enabled') === '1' : false;
+      const devIso = typeof localStorage !== 'undefined' ? localStorage.getItem('palporro_dev_cutoff') : null;
+      if (devEnabled && devIso) {
+        cutoff = new Date(devIso);
+      } else {
+        const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('palporro_voting_start') : null;
+        if (stored) cutoff = new Date(stored);
+      }
+    } catch (e) {
+      // ignore localStorage errors
+    }
+
+    if (!cutoff) {
+      // Calcular último viernes a las 23:00 hora local
+      const now = new Date();
+      const day = now.getDay(); // 0=Sun .. 5=Fri .. 6=Sat
+      // días desde el último viernes
+      const daysSinceFri = (day >= 5) ? day - 5 : (7 - (5 - day));
+      const lastFri = new Date(now);
+      lastFri.setDate(now.getDate() - daysSinceFri);
+      lastFri.setHours(23, 0, 0, 0);
+      cutoff = lastFri;
+    }
+
+    const cutoffTs = cutoff.getTime();
+
+    // Debug logs para inspeccionar por qué el filtro no cambia en dev
+    try {
+      const sample = (all || []).slice(0,5).map((v: any) => ({ pilot: v.pilot, timestamp: v.timestamp, created_at: v.created_at }));
+      console.debug('getRelevantVotes:', { environment, cutoff: cutoff.toISOString(), cutoffTs, totalFetched: (all || []).length, sample });
+    } catch (e) { /* ignore */ }
+
+    // Filtrar votos cuyo timestamp (ms) sea posterior o igual al cutoff.
+    // Si no tenemos timestamp numérico, intentar usar created_at (si existe).
+    // Si no hay forma de determinar fecha, excluir el voto para evitar que
+    // votos "sin fecha" bloqueen el filtrado.
+    const filtered = (all || []).filter(v => {
+      if (!v) return false;
+      // Preferimos timestamp explícito (ms)
+      const ts = typeof v.timestamp === 'number' ? v.timestamp : parseInt(String(v.timestamp || '0')) || 0;
+      if (ts && ts >= cutoffTs) return true;
+
+      // Fallback: si la fila tiene created_at (Supabase), usarla
+      const createdAtRaw = (v as any).created_at || (v as any).createdAt || null;
+      if (createdAtRaw) {
+        const createdTs = Date.parse(String(createdAtRaw));
+        if (!isNaN(createdTs) && createdTs >= cutoffTs) return true;
+      }
+
+      // No podemos confirmar que el voto sea reciente -> excluir
+      return false;
+    });
+
+    return filtered;
+  } catch (err) {
+    console.error('getRelevantVotes error:', err);
+    return [];
+  }
 }
 
 // Agregar o actualizar voto (upsert)
@@ -203,7 +297,7 @@ export function subscribeToVotes(
         filter: `environment=eq.${environment}`
       },
       async () => {
-        const votes = await getVotes(environment);
+        const votes = await getRelevantVotes(environment);
         callback(votes);
       }
     )
@@ -286,6 +380,170 @@ export const saveRaceHistory = async (
   }
 
   return true;
+};
+
+// Archivado: crear race_history + mover votos actuales a race_votes y eliminar de palporro_votes
+export const archiveRaceAndMoveVotes = async (
+  raceNumber: number,
+  trackName: string,
+  scheduledDate: Date,
+  scheduledDay: string,
+  scheduledTime: string,
+  confirmedPilots: string[],
+  votesToArchive: VoteData[],
+  environment: 'PROD' | 'DEV' | 'TEST'
+): Promise<boolean> => {
+  const client = getClient(environment);
+  if (!client) {
+    console.error('Supabase client not initialized');
+    return false;
+  }
+
+  try {
+    // 1) Crear el registro en race_history y obtener el id
+    const { data: inserted, error: errInsert } = await client
+      .from('race_history')
+      .insert({
+        race_number: raceNumber,
+        track_name: trackName,
+        scheduled_date: scheduledDate.toISOString(),
+        scheduled_day: scheduledDay,
+        scheduled_time: scheduledTime,
+        confirmed_pilots: confirmedPilots,
+        race_completed: false,
+        race_results: [],
+        environment: environment
+      })
+      .select()
+      .single();
+
+    if (errInsert || !inserted) {
+      console.error('Error inserting race_history during archive:', errInsert);
+      return false;
+    }
+
+    const raceId = (inserted as any).id;
+
+    // 2) Insertar votos en race_votes (histórico)
+    if (Array.isArray(votesToArchive) && votesToArchive.length > 0) {
+      const toInsert = votesToArchive.map(v => ({
+        race_id: raceId,
+        pilot: v.pilot,
+        slots: v.slots || [],
+        ip: v.ip || null,
+        timestamp: v.timestamp || null,
+        environment
+      }));
+
+      try {
+        console.log('archiveRaceAndMoveVotes: inserting into race_votes', { raceId, count: toInsert.length, sample: toInsert.slice(0, 5) });
+        const { data: insertedVotes, error: errArchive } = await client.from('race_votes').insert(toInsert).select();
+        if (errArchive) {
+          console.error('Error inserting into race_votes:', errArchive);
+        } else {
+          console.log('archiveRaceAndMoveVotes: inserted votes into race_votes', { insertedCount: Array.isArray(insertedVotes) ? insertedVotes.length : 0 });
+        }
+      } catch (e) {
+        console.error('archiveRaceAndMoveVotes: exception inserting into race_votes', e);
+      }
+
+      // 3) Eliminar votos archivados de la tabla activa para resetear votación
+      try {
+        const pilots = votesToArchive.map(v => v.pilot);
+        console.log('archiveRaceAndMoveVotes: deleting from palporro_votes', { pilots, environment });
+        const { data: deletedRows, error: errDel } = await client
+          .from('palporro_votes')
+          .delete()
+          .in('pilot', pilots)
+          .eq('environment', environment)
+          .select();
+
+        if (errDel) {
+          console.error('Error deleting palporro_votes during archive:', errDel);
+        } else {
+          console.log('archiveRaceAndMoveVotes: deleted rows from palporro_votes', { deletedCount: Array.isArray(deletedRows) ? deletedRows.length : 0 });
+        }
+      } catch (e) {
+        console.error('Failed deleting palporro_votes during archive:', e);
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.error('archiveRaceAndMoveVotes error:', err);
+    return false;
+  }
+};
+
+// Mover votos a una carrera existente (no crea un nuevo race_history)
+export const moveVotesToRace = async (
+  raceId: string,
+  votesToArchive: VoteData[],
+  environment: 'PROD' | 'DEV' | 'TEST'
+): Promise<boolean> => {
+  const client = getClient(environment);
+  if (!client) {
+    console.error('Supabase client not initialized');
+    return false;
+  }
+
+  try {
+    if (!raceId) {
+      console.error('moveVotesToRace: missing raceId');
+      return false;
+    }
+
+    if (!Array.isArray(votesToArchive) || votesToArchive.length === 0) {
+      console.log('moveVotesToRace: no votes to archive');
+      return true;
+    }
+
+    const toInsert = votesToArchive.map(v => ({
+      race_id: raceId,
+      pilot: v.pilot,
+      slots: v.slots || [],
+      ip: v.ip || null,
+      timestamp: v.timestamp || null,
+      environment
+    }));
+
+    try {
+      console.log('moveVotesToRace: inserting into race_votes', { raceId, count: toInsert.length, sample: toInsert.slice(0,5) });
+      const { data: insertedVotes, error: errArchive } = await client.from('race_votes').insert(toInsert).select();
+      if (errArchive) {
+        console.error('moveVotesToRace: Error inserting into race_votes:', errArchive);
+      } else {
+        console.log('moveVotesToRace: inserted votes into race_votes', { insertedCount: Array.isArray(insertedVotes) ? insertedVotes.length : 0 });
+      }
+    } catch (e) {
+      console.error('moveVotesToRace: exception inserting into race_votes', e);
+    }
+
+    // Eliminar votos archivados de la tabla activa para resetear votación
+    try {
+      const pilots = votesToArchive.map(v => v.pilot);
+      console.log('moveVotesToRace: deleting from palporro_votes', { pilots, environment });
+      const { data: deletedRows, error: errDel } = await client
+        .from('palporro_votes')
+        .delete()
+        .in('pilot', pilots)
+        .eq('environment', environment)
+        .select();
+
+      if (errDel) {
+        console.error('moveVotesToRace: Error deleting palporro_votes during archive:', errDel);
+      } else {
+        console.log('moveVotesToRace: deleted rows from palporro_votes', { deletedCount: Array.isArray(deletedRows) ? deletedRows.length : 0 });
+      }
+    } catch (e) {
+      console.error('moveVotesToRace: Failed deleting palporro_votes during archive:', e);
+    }
+
+    return true;
+  } catch (err) {
+    console.error('moveVotesToRace error:', err);
+    return false;
+  }
 };
 
 export const updateRaceResults = async (
@@ -434,14 +692,18 @@ export const upsertRaceResults = async (
 };
 
 export const getRaceHistory = async (
-  environment: 'PROD' | 'DEV'
+  environment: 'PROD' | 'DEV' | 'TEST'
 ): Promise<RaceHistory[]> => {
   const client = getClient(environment);
-  
+  if (!client) {
+    console.error('Supabase client not initialized in getRaceHistory');
+    return [];
+  }
+
   const { data, error } = await client
     .from('race_history')
     .select('*')
-    .eq('environment', environment)  // ← AGREGAR ESTA LÍNEA
+    .eq('environment', environment)
     .order('race_number', { ascending: false });
 
   if (error) {
@@ -449,8 +711,9 @@ export const getRaceHistory = async (
     return [];
   }
 
-  console.log('Race history fetched:', data); // ← Debug
-  return data || [];
+  console.log('Race history fetched:', data);
+  // Normalize each race
+  return (data || []).map((r: any) => normalizeRace(r)).filter(Boolean) as RaceHistory[];
 };
 
 export const getRaceByNumber = async (
@@ -458,11 +721,16 @@ export const getRaceByNumber = async (
   environment: 'PROD' | 'TEST'
 ): Promise<RaceHistory | null> => {
   const client = getClient(environment);
-  
+  if (!client) {
+    console.error('Supabase client not initialized in getRaceByNumber');
+    return null;
+  }
+
   const { data, error } = await client
     .from('race_history')
     .select('*')
     .eq('race_number', raceNumber)
+    .eq('environment', environment)
     .single();
 
   if (error) {
@@ -470,7 +738,7 @@ export const getRaceByNumber = async (
     return null;
   }
 
-  return data;
+  return normalizeRace(data);
 };
 
 export const getRaceById = async (
@@ -492,7 +760,8 @@ export const getRaceById = async (
     return null;
   }
 
-  return data;
+  // Normalize shape to ensure UI finds relevant_data/session_info
+  return normalizeRace(data);
 };
 
 // ============================================

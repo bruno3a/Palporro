@@ -4,7 +4,7 @@ import { GoogleGenAI } from '@google/genai';
 import { PILOTS, INITIAL_TRACKS, SCRIPT_SYSTEM_INSTRUCTION_DYNAMIC, VOICE_OPTIONS, ANALYSIS_SYSTEM_INSTRUCTION, ARTISTIC_ALIASES } from './constants';
 import { decode, encode, decodeAudioData, createWavBlob } from './audioUtils';
 import { TrackStatus, Standing } from './types';
-import { getVotes, addVote, subscribeToVotes, getVotingStats, getEnvironment, getVoteByIp, TimeSlot } from "./src/supabaseClient";
+import { getVotes, addVote, subscribeToVotes, getVotingStats, getEnvironment, getVoteByIp, getRelevantVotes, TimeSlot, archiveRaceAndMoveVotes } from "./src/supabaseClient";
 import { saveRaceHistory, getRaceHistory, updateRaceResults, upsertRaceResults, getStandings, upsertStandings, RaceHistory, RaceResult } from "./src/supabaseClient";
 
 interface VoteData {
@@ -62,6 +62,13 @@ const App: React.FC = () => {
       return v == null ? true : v === '1';
     } catch (e) { return true; }
   });
+  // TEST: simulate cutoff override
+  const [devSimulateCutoff, setDevSimulateCutoff] = useState<boolean>(() => {
+    try { return localStorage.getItem('palporro_dev_cutoff_enabled') === '1'; } catch(e) { return false; }
+  });
+  const [devCutoffIso, setDevCutoffIso] = useState<string>(() => {
+    try { return localStorage.getItem('palporro_dev_cutoff') || ''; } catch(e) { return ''; }
+  });
 
   // Ensure Supabase integration uses slots shape. Provide a small migration helper
   // that converts legacy votes with days/times arrays into slots when loading.
@@ -87,12 +94,8 @@ const App: React.FC = () => {
       setVotingState(prev => ({ ...prev, allVotes: migrated }));
     }
   }, []);
+  const [tracks, setTracks] = useState<TrackStatus[]>(INITIAL_TRACKS.map((t, idx) => ({ name: t, completed: idx === 0 })));
 
-  const [tracks] = useState<TrackStatus[]>(INITIAL_TRACKS.map((t, idx) => ({ 
-    name: t, 
-    completed: idx === 0
-  })));
-  
   const [metricsInput, setMetricsInput] = useState("");
   const [analysis, setAnalysis] = useState("");
   const [standings, setStandings] = useState<Standing[]>(PILOTS.map(p => ({ pilot: p, points: 0, lastResult: 'N/A', racesRun: 0, incidences: 0 })));
@@ -260,10 +263,50 @@ const arraysEqual = (a: string[], b: string[]) => {
     }
   }, []);
 
+  // Load race history on mount (use TEST environment for development)
+  useEffect(() => {
+    (async () => {
+      try {
+        const env = getEnvironment();
+        // Default to TEST when running locally / development
+        const fetchEnv = env || 'TEST';
+        const history = await getRaceHistory(fetchEnv as any);
+        setRaceHistory(history || []);
+        console.log('Initial raceHistory load:', (history || []).length, 'env:', fetchEnv);
+      } catch (err) {
+        console.error('Error loading race history on mount:', err);
+      }
+    })();
+  }, []);
+
   const audioContextRef = useRef<AudioContext | null>(null);
 
   const completedCount = useMemo(() => tracks.filter(t => t.completed).length, [tracks]);
-  const nextTrackIndex = useMemo(() => tracks.findIndex(t => !t.completed), [tracks]);
+  const [nextTrackIndex, setNextTrackIndex] = useState<number>(() => {
+    // default to first non-completed
+    const idx = INITIAL_TRACKS.findIndex((_, i) => i > 0);
+    return idx === -1 ? 0 : idx;
+  });
+
+  // Elegir aleatoriamente la próxima pista entre las no corridas
+  const pickRandomNextTrack = (tracksArr: TrackStatus[], raceHist: RaceHistory[] = []) => {
+    try {
+      const completedNames = new Set<string>();
+      tracksArr.forEach(t => { if (t.completed) completedNames.add((t.name || '').toLowerCase()); });
+      raceHist.forEach(r => { if (r.race_completed && r.track_name) completedNames.add((r.track_name || '').toLowerCase()); });
+
+      const candidates = tracksArr.map((t, i) => ({ t, i })).filter(x => !completedNames.has((x.t.name || '').toLowerCase()));
+      if (candidates.length === 0) {
+        // fallback: first non-completed or 0
+        const fallback = tracksArr.findIndex(t => !t.completed);
+        return fallback === -1 ? 0 : fallback;
+      }
+      const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+      return chosen.i;
+    } catch (e) {
+      return tracksArr.findIndex(t => !t.completed) || 0;
+    }
+  };
 
   const fiaScoreData = useMemo(() => {
     if (completedCount === 0) return { value: 0, label: "PENDIENTE", isPending: true };
@@ -489,12 +532,18 @@ const arraysEqual = (a: string[], b: string[]) => {
 
   // When a track is clicked from portada, open its results modal and allow editing via radio code
   const handleTrackClick = async (trackName: string) => {
-    // Try to find cached race first
+    console.log('handleTrackClick:', trackName, 'raceHistoryCount:', raceHistory?.length);
+    // Try to find cached race first (exact match)
     let found = raceHistory.find(r => r.track_name === trackName || r.track_name === `${trackName} GP`);
+    // If not found, try a case-insensitive contains match as a fallback (helps for variants)
+    if (!found) {
+      const lower = trackName.toLowerCase();
+      found = raceHistory.find(r => (r.track_name || '').toLowerCase().includes(lower) || (r.track_name || '').toLowerCase() === `${lower} gp`);
+    }
     // If not found, fetch latest DEV history and retry (useful after inserting dummy data)
     if (!found) {
       try {
-        const latest = await getRaceHistory('DEV');
+        const latest = await getRaceHistory('TEST');
         if (latest && latest.length) {
           setRaceHistory(prev => {
             // merge latest into prev, preferring latest entries
@@ -512,13 +561,16 @@ const arraysEqual = (a: string[], b: string[]) => {
     if (found) {
       try {
         // Try to fetch the freshest version from Supabase by id to ensure relevant_data/session_info are present
-        const env = getEnvironment() as any;
+        // Use the environment attached to the found record if available; fallback to the app environment or TEST for local dev.
+        const env = (found as any).environment || getEnvironment() || 'TEST';
         if (found.id) {
-          const fresh = await (await import('./src/supabaseClient')).getRaceById(found.id, env);
+          const fresh = await (await import('./src/supabaseClient')).getRaceById(found.id, env as any);
+          console.log('Fetched fresh race by id:', found.id, 'env:', env, 'hasRelevantData:', !!fresh?.relevant_data);
           if (fresh) {
             setSelectedHistoryRace(fresh);
             setShowResultsModal(true);
           } else {
+            // If fetch by id failed, still show the cached entry
             setSelectedHistoryRace(found);
             setShowResultsModal(true);
           }
@@ -551,8 +603,28 @@ const arraysEqual = (a: string[], b: string[]) => {
       setIsEditingResults(true);
       setShowResultsModal(true);
     } else {
-      setSelectedHistoryRace(null);
-      alert('No hay resultados archivados para esta pista');
+      // No hay resultados aún: en lugar de mostrar un alert, abrimos el mismo modal de resultados
+      // pero con un objeto vacío de carrera (sin resultados). El modal renderizará el mensaje
+      // "No hay resultados aún" y mostrará el botón "Editar" para que, si el usuario posee
+      // el código, pueda desbloquear la edición desde allí.
+      const empty: RaceHistory = {
+        id: `empty-${Date.now()}`,
+        race_number: -1,
+        track_name: trackName,
+        scheduled_date: new Date().toISOString(),
+        scheduled_day: new Date().toLocaleDateString('es-AR', { weekday: 'long' }),
+        scheduled_time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+        confirmed_pilots: [],
+        race_completed: false,
+        race_results: [],
+        created_at: new Date().toISOString()
+      };
+      // Ensure editing state is reset (read-only view), but modal stays open so user can see
+      // the "no results" message and the Edit button to unlock editing if they have the code.
+      setSelectedHistoryRace(empty);
+      setEditingResults(null);
+      setIsEditingResults(false);
+      setShowResultsModal(true);
     }
   };
 
@@ -593,6 +665,19 @@ const arraysEqual = (a: string[], b: string[]) => {
       alert('Error al parsear el JSON. Verificá que sea un JSON válido.');
       return null;
     }
+  };
+
+  // Generate a simple relevant_data object from race results when none is provided
+  const computeRelevantDataFromResults = (results: RaceResult[]) => {
+    const winner = results.find(r => r.position === 1) || results[0] || null;
+    const pilotsCount = results.length;
+    const noShows = results.filter(r => r.isNoShow).length;
+    const incidents = results.reduce((acc, r) => acc + (r.incidents || 0), 0);
+
+    const performance = `Pilotos: ${pilotsCount} • Incidentes: ${incidents} • No-shows: ${noShows}`;
+    const summary = winner ? `Ganador: ${winner.pilot} (${winner.totalTime || 'tiempo no disponible'})` : 'Resultados sin ganador claro';
+
+    return { performance, summary };
   };
 
   const handleImportJson = () => {
@@ -1008,14 +1093,9 @@ const arraysEqual = (a: string[], b: string[]) => {
       console.log('No hay carrera para archivar');
       return;
     }
-
     const trackIndex = nextTrackIndex;
-    if (trackIndex === -1) {
-      console.log('No hay próxima pista');
-      return;
-    }
-
-    const trackName = tracks[trackIndex].name;
+    // If no next track index is available, proceed with a fallback name and still reset voting.
+    const trackName = (trackIndex !== -1 && tracks[trackIndex]) ? tracks[trackIndex].name : (tracks[0]?.name || 'Sin pista');
     const confirmedPilots = votingState.allVotes
       .filter(v => (v.slots || []).some(s => s.day === nextRace.day && s.time === nextRace.time))
       .map(v => v.pilot);
@@ -1029,7 +1109,9 @@ const arraysEqual = (a: string[], b: string[]) => {
     const raceNumber = completedCount + 1;
     const environment = getEnvironment();
     
-    const success = await saveRaceHistory(
+    let success = false;
+    try {
+      success = await saveRaceHistory(
       raceNumber,
       trackName,
       nextRace.date,
@@ -1038,39 +1120,73 @@ const arraysEqual = (a: string[], b: string[]) => {
       confirmedPilots,
       environment
     );
-
-    if (success) {
-      console.log('Carrera archivada exitosamente en Supabase');
-      
-      // Resetear votación
-      const newState = {
-        isOpen: false,
-        hasVoted: false,
-        selectedSlots: [],
-        selectedDays: [],
-        selectedTimes: [],
-        userPilot: votingState.userPilot, // Mantener piloto seleccionado
-        allVotes: []
-      };
-      
-      setVotingState(newState);
-      
-      try {
-        localStorage.removeItem('palporro_voting');
-        // Resetear fecha de inicio de votación al domingo actual
-        const now = new Date();
-        const argNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
-        const d = new Date(argNow);
-        const dow = d.getDay();
-        d.setDate(d.getDate() - dow);
-        d.setHours(0,0,0,0);
-        localStorage.setItem('palporro_voting_start', d.toISOString());
-        console.log('Votación reseteada correctamente');
-      } catch (e) {
-        console.error('Error resetting voting:', e);
-      }
+    } catch (err) {
+      console.error('saveRaceHistory threw error:', err);
+      success = false;
+    }
+    if (!success) {
+      console.error('Error al archivar carrera en Supabase — continuaré con el reseteo local de votación para evitar bloqueo semanal');
     } else {
-      console.error('Error al archivar carrera en Supabase');
+      console.log('Carrera archivada exitosamente en Supabase');
+    }
+
+    // Intentar mover votos actuales a la tabla histórica (race_votes) y eliminar
+    // los votos activos para resetear la votación. Esto preserva historial.
+      try {
+        // Prefer backend-determined "relevant" votes (getRelevantVotes) to
+        // avoid relying on possibly stale local state (votingState.allVotes).
+        let votesToArchive = votingState.allVotes || [];
+        try {
+          const { getRelevantVotes } = await import("./src/supabaseClient");
+          const relevant = await getRelevantVotes(environment as any);
+          if (Array.isArray(relevant) && relevant.length > 0) {
+            votesToArchive = relevant;
+          }
+        } catch (e) {
+          // If dynamic import / fetch fails, fall back to local votes but warn.
+          console.warn('Could not fetch relevant votes from supabaseClient, falling back to local votingState.allVotes', e);
+        }
+
+        console.log('archive debug: votesToArchive length', votesToArchive.length, { environment });
+        console.log('archive debug: local votingState.allVotes length', (votingState.allVotes || []).length);
+        if (votesToArchive.length > 0) {
+          console.log('Moviendo votos actuales a race_votes y limpiando palporro_votes...');
+          const moved = await archiveRaceAndMoveVotes(raceNumber, trackName, nextRace.date, nextRace.day, nextRace.time, confirmedPilots, votesToArchive, environment as any);
+          if (moved) console.log('Votos archivados y removidos de la tabla activa.');
+          else console.warn('archiveRaceAndMoveVotes devolvió false.');
+        }
+      } catch (e) {
+        console.error('Error moviendo votos a historial:', e);
+      }
+
+    // Siempre resetear el estado de votación local aunque el guardado remoto falle,
+    // para garantizar que la semana se cierre y no quede bloqueada.
+    const newState = {
+      isOpen: false,
+      hasVoted: false,
+      selectedSlots: [],
+      selectedDays: [],
+      selectedTimes: [],
+      userPilot: votingState.userPilot, // Mantener piloto seleccionado
+      allVotes: []
+    };
+    setVotingState(newState);
+
+    try {
+      localStorage.removeItem('palporro_voting');
+      // Resetear fecha de inicio de votación al domingo actual
+      const now = new Date();
+      const argNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+      const d = new Date(argNow);
+      const dow = d.getDay();
+      d.setDate(d.getDate() - dow);
+      d.setHours(0,0,0,0);
+      localStorage.setItem('palporro_voting_start', d.toISOString());
+      console.log('Votación reseteada correctamente (local)');
+      // Mark last archive so periodic check won't run again immediately
+      localStorage.setItem('palporro_last_archive', new Date().toISOString());
+    } catch (e) {
+      console.error('Error resetting voting:', e);
     }
   };
     
@@ -1139,8 +1255,17 @@ const arraysEqual = (a: string[], b: string[]) => {
         console.warn('No se pudo obtener IP');
       }
 
-      // 2. Cargar todos los votos
-      const votes = await getVotes(environment);
+      // 2. Cargar votos relevantes para la próxima carrera (filtrado local)
+      //    usando la nueva función getRelevantVotes para ignorar votos viejos
+      const votes = await (async () => {
+        try {
+          const { getRelevantVotes } = await import('./src/supabaseClient');
+          return await getRelevantVotes(environment);
+        } catch (e) {
+          // Fallback al comportamiento anterior si la import falla
+          return await getVotes(environment);
+        }
+      })();
 
       // 3. Si tenemos IP, buscar si ya votó desde esta IP
       if (userIp) {
@@ -1192,7 +1317,29 @@ const arraysEqual = (a: string[], b: string[]) => {
     return () => unsubscribe();
   }, []);
 
-  // Reintentar votos pendientes guardados localmente (palporro_pending_vote)
+    // When dev cutoff toggles change, re-fetch relevant votes so the UI updates
+    useEffect(() => {
+      const reloadRelevantVotes = async () => {
+        try {
+          const environment = getEnvironment();
+          const { getRelevantVotes } = await import('./src/supabaseClient');
+          const votes = await getRelevantVotes(environment);
+          // compute stats locally
+          const dayCount: Record<string, number> = {};
+          const timeCount: Record<string, number> = {};
+          votes.forEach((v: any) => (v.slots || []).forEach((s: any) => { dayCount[s.day] = (dayCount[s.day] || 0) + 1; timeCount[s.time] = (timeCount[s.time] || 0) + 1; }));
+          setVotingState(prev => ({ ...prev, allVotes: votes }));
+          setVotingStats({ totalVotes: votes.length, dayCount, timeCount });
+        } catch (err) {
+          console.warn('Failed reloading relevant votes after dev cutoff change', err);
+        }
+      };
+
+      // Only trigger when developer override changes
+      reloadRelevantVotes();
+    }, [devSimulateCutoff, devCutoffIso]);
+
+    // Reintentar votos pendientes guardados localmente (palporro_pending_vote)
   useEffect(() => {
     let mounted = true;
 
@@ -1233,8 +1380,8 @@ const arraysEqual = (a: string[], b: string[]) => {
     const loadHistory = async () => {
       try {
         const prod = await getRaceHistory('PROD');
-        const dev = await getRaceHistory('DEV');
-        const combined = [...(prod || []), ...(dev || [])];
+        const test = await getRaceHistory('TEST');
+        const combined = [...(prod || []), ...(test || [])];
         // deduplicate by race_number or id, prefer DEV over PROD if duplicate
         const map: Record<string, RaceHistory> = {};
         combined.forEach(r => {
@@ -1243,7 +1390,7 @@ const arraysEqual = (a: string[], b: string[]) => {
           map[key] = r;
         });
         const merged = Object.values(map).sort((a,b) => b.race_number - a.race_number);
-        console.log('Historial de carreras cargado (PROD+DEV):', merged);
+        console.log('Historial de carreras cargado (PROD+TEST):', merged);
         setRaceHistory(merged);
       } catch (err) {
         console.error('Error cargando historial de carreras:', err);
@@ -1252,6 +1399,100 @@ const arraysEqual = (a: string[], b: string[]) => {
 
     loadHistory();
   }, []);
+
+  // When raceHistory changes, mark completed tracks and pick next random track
+  useEffect(() => {
+    try {
+      // Determine completed track names (from raceHistory) in chronological order
+      const completedSet = new Set<string>();
+      const completedOrder: string[] = [];
+      // raceHistory may contain multiple environments; prefer ordering by race_number asc (chronological)
+      const ordered = [...raceHistory].sort((a,b) => (a.race_number || 0) - (b.race_number || 0));
+      ordered.forEach(r => {
+        const name = (r.track_name || '').toLowerCase();
+        if (!name) return;
+        if (!completedSet.has(name) && (r.race_completed || (r.race_results && r.race_results.length > 0))) {
+          completedSet.add(name);
+          completedOrder.push(name);
+        }
+      });
+
+      // Rebuild tracks so completed ones appear first in the order they were run
+      const completedTracks: TrackStatus[] = [];
+      const remainingTracks: TrackStatus[] = [];
+      tracks.forEach(t => {
+        const key = (t.name || '').toLowerCase();
+        if (completedSet.has(key)) {
+          // placeholder; we'll order them according to completedOrder
+          // find matching entry in completedOrder later
+        } else {
+          remainingTracks.push({ ...t, completed: false });
+        }
+      });
+
+      // build completedTracks in the confirmed order
+      completedOrder.forEach(nameLower => {
+        const found = tracks.find(t => (t.name || '').toLowerCase() === nameLower);
+        if (found) completedTracks.push({ ...found, completed: true });
+      });
+
+      // Now try to preserve any tracks that were completed but not in raceHistory ordering
+      tracks.forEach(t => {
+        const key = (t.name || '').toLowerCase();
+        if (completedSet.has(key) && !completedTracks.find(ct => (ct.name || '').toLowerCase() === key)) {
+          completedTracks.push({ ...t, completed: true });
+        }
+      });
+
+      // Determine the 'next' track (persisted until that track receives results)
+      const persistedNext = localStorage.getItem('palporro_next_track');
+
+      let nextName: string | null = persistedNext || null;
+
+      // If persisted next is now completed (results uploaded), clear it so we can pick a new one
+      if (nextName && completedSet.has((nextName || '').toLowerCase())) {
+        nextName = null;
+        localStorage.removeItem('palporro_next_track');
+      }
+
+      // If we don't have a persisted next, choose one randomly among remainingTracks
+      if (!nextName) {
+        const idxChoice = pickRandomNextTrack([...completedTracks, ...remainingTracks], raceHistory);
+        const chosen = [...completedTracks, ...remainingTracks][idxChoice];
+        if (chosen) {
+          nextName = chosen.name;
+          try { localStorage.setItem('palporro_next_track', nextName); } catch(e){}
+        }
+      }
+
+      // Build final ordered tracks: completed (in order), then next (if present and not already in completed), then the rest of remaining (excluding next)
+      const finalTracks: TrackStatus[] = [];
+      completedTracks.forEach(t => finalTracks.push(t));
+
+      if (nextName) {
+        const nextLower = nextName.toLowerCase();
+        const nextEntry = remainingTracks.find(t => (t.name || '').toLowerCase() === nextLower);
+        if (nextEntry) {
+          finalTracks.push({ ...nextEntry, completed: false });
+        }
+      }
+
+      // push the rest of remainingTracks except the chosen next
+      remainingTracks.forEach(t => {
+        if (!nextName || (t.name || '').toLowerCase() !== (nextName || '').toLowerCase()) {
+          finalTracks.push({ ...t, completed: false });
+        }
+      });
+
+      setTracks(finalTracks);
+
+      // Update nextTrackIndex to point to the nextEntry we placed (it's right after completedTracks)
+      const computedIdx = completedTracks.length; // index of next if it exists
+      setNextTrackIndex(nextName ? computedIdx : -1);
+    } catch (e) {
+      // ignore
+    }
+  }, [raceHistory]);
 
   // Cargar standings desde Supabase al montar
   useEffect(() => {
@@ -1507,6 +1748,73 @@ const arraysEqual = (a: string[], b: string[]) => {
                     >
                       {useGridVoting ? 'GRID' : 'CLÁSICO'}
                     </button>
+                  </div>
+
+                  <div className="flex flex-col gap-2 p-3 bg-zinc-950 rounded-xl">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-zinc-300">TEST: Simular cutoff</span>
+                      <button
+                        onClick={() => {
+                          const next = !devSimulateCutoff;
+                          setDevSimulateCutoff(next);
+                          try { localStorage.setItem('palporro_dev_cutoff_enabled', next ? '1' : '0'); } catch(e){}
+                        }}
+                        className={`px-3 py-1 rounded-lg font-black text-xs transition-all ${devSimulateCutoff ? 'bg-green-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}
+                      >
+                        {devSimulateCutoff ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="datetime-local"
+                        value={devCutoffIso}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setDevCutoffIso(v);
+                          try { localStorage.setItem('palporro_dev_cutoff', v); } catch(e){}
+                        }}
+                        className="w-full bg-zinc-800 text-zinc-200 p-2 rounded-lg text-xs"
+                      />
+                    </div>
+                    <div className="text-[11px] text-zinc-400">Si está activado, la app usará esta fecha/hora como cutoff para filtrar votos.</div>
+                    <div className="flex items-center gap-2 pt-2">
+                      <div className="text-[11px] text-zinc-300">Cutoff efectivo:</div>
+                      <div className="text-[11px] font-black text-purple-400">
+                        {(() => {
+                          try {
+                            if (devSimulateCutoff && devCutoffIso) return new Date(devCutoffIso).toLocaleString();
+                            const stored = localStorage.getItem('palporro_voting_start');
+                            if (stored) return new Date(stored).toLocaleString();
+                            // calcular último viernes 23:00
+                            const now = new Date();
+                            const day = now.getDay();
+                            const daysSinceFri = (day >= 5) ? day - 5 : (7 - (5 - day));
+                            const lastFri = new Date(now);
+                            lastFri.setDate(now.getDate() - daysSinceFri);
+                            lastFri.setHours(23,0,0,0);
+                            return lastFri.toLocaleString();
+                          } catch (e) { return 'N/A'; }
+                        })()}
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const environment = getEnvironment();
+                            const { getRelevantVotes } = await import('./src/supabaseClient');
+                            const votes = await getRelevantVotes(environment);
+                            const dayCount: Record<string, number> = {};
+                            const timeCount: Record<string, number> = {};
+                            votes.forEach((v: any) => (v.slots || []).forEach((s: any) => { dayCount[s.day] = (dayCount[s.day] || 0) + 1; timeCount[s.time] = (timeCount[s.time] || 0) + 1; }));
+                            setVotingState(prev => ({ ...prev, allVotes: votes }));
+                            setVotingStats({ totalVotes: votes.length, dayCount, timeCount });
+                          } catch (err) { console.warn('Manual reload failed', err); }
+                        }}
+                        className="ml-auto px-3 py-1 rounded-lg bg-blue-600 text-white text-xs font-black"
+                      >
+                        Aplicar ahora
+                      </button>
+                    </div>
                   </div>
 
                   <button
@@ -2519,14 +2827,16 @@ const arraysEqual = (a: string[], b: string[]) => {
                             relevantData
                           });
 
-                          // Usar upsertRaceResults con todos los datos
+                          // Ensure we have relevant_data (generate automatically if missing)
+                          const payloadRelevantData = relevantData || computeRelevantDataFromResults(finalResults);
+                          // Ensure we pass snake_case explicit property to the upsert helper
                           const result = await upsertRaceResults(
                             selectedHistoryRace.track_name,
                             finalResults,
                             env,
                             selectedHistoryRace.id,
                             sessionInfo,
-                            relevantData
+                            payloadRelevantData
                           );
 
                           if (result.success && result.race) {
@@ -2568,6 +2878,46 @@ const arraysEqual = (a: string[], b: string[]) => {
                                 setSelectedHistoryRace(freshRace);
                                 console.log('✅ selectedHistoryRace actualizado:', freshRace);
                               }
+                            }
+
+                            // Intentar mover votos relevantes a race_votes inmediatamente
+                            try {
+                              const { getRelevantVotes, moveVotesToRace } = await import('./src/supabaseClient');
+                              const votes = await getRelevantVotes(env);
+                              console.log('Post-save: relevant votes length', votes.length);
+                              if (Array.isArray(votes) && votes.length > 0) {
+                                const moved = await moveVotesToRace(result.race!.id, votes, env as any);
+                                if (moved) console.log('Votos movidos a race_votes tras guardar resultados');
+                                else console.warn('moveVotesToRace devolvió false');
+                              }
+                            } catch (e) {
+                              console.warn('No se pudieron mover los votos tras guardar resultados:', e);
+                            }
+
+                            // Resetear votación local para la próxima pista (inmediato)
+                            try {
+                              const newState = {
+                                isOpen: false,
+                                hasVoted: false,
+                                selectedSlots: [],
+                                selectedDays: [],
+                                selectedTimes: [],
+                                userPilot: votingState.userPilot,
+                                allVotes: []
+                              };
+                              setVotingState(newState);
+                              localStorage.removeItem('palporro_voting');
+                              // Resetear fecha de inicio de votación al domingo actual
+                              const now = new Date();
+                              const argNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+                              const d = new Date(argNow);
+                              const dow = d.getDay();
+                              d.setDate(d.getDate() - dow);
+                              d.setHours(0,0,0,0);
+                              localStorage.setItem('palporro_voting_start', d.toISOString());
+                              localStorage.setItem('palporro_last_archive', new Date().toISOString());
+                            } catch (e) {
+                              console.warn('Error resetting local voting state after saving results', e);
                             }
                           } else {
                             throw new Error('No se pudo guardar la carrera');
