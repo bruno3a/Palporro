@@ -359,8 +359,9 @@ export const saveRaceHistory = async (
   environment: 'PROD' | 'DEV'
 ): Promise<boolean> => {
   const client = getClient(environment);
+  console.log('saveRaceHistory: environment, raceNumber, trackName', { environment, raceNumber, trackName });
   
-  const { error } = await client
+  const { data: insertResult, error } = await client
     .from('race_history')
     .insert({
       race_number: raceNumber,
@@ -378,6 +379,8 @@ export const saveRaceHistory = async (
     console.error('Error saving race history:', error);
     return false;
   }
+
+  console.log('saveRaceHistory: insertResult', insertResult);
 
   return true;
 };
@@ -426,13 +429,15 @@ export const archiveRaceAndMoveVotes = async (
 
     // 2) Insertar votos en race_votes (histórico)
     if (Array.isArray(votesToArchive) && votesToArchive.length > 0) {
+      // Preserve each vote's original environment when archiving. If a vote row
+      // lacks an environment field, fall back to the environment argument.
       const toInsert = votesToArchive.map(v => ({
         race_id: raceId,
         pilot: v.pilot,
         slots: v.slots || [],
         ip: v.ip || null,
         timestamp: v.timestamp || null,
-        environment
+        environment: (v as any).environment || environment
       }));
 
       try {
@@ -449,19 +454,31 @@ export const archiveRaceAndMoveVotes = async (
 
       // 3) Eliminar votos archivados de la tabla activa para resetear votación
       try {
-        const pilots = votesToArchive.map(v => v.pilot);
-        console.log('archiveRaceAndMoveVotes: deleting from palporro_votes', { pilots, environment });
-        const { data: deletedRows, error: errDel } = await client
-          .from('palporro_votes')
-          .delete()
-          .in('pilot', pilots)
-          .eq('environment', environment)
-          .select();
+        // Delete votes grouped by their original environment to avoid removing
+        // rows from the wrong environment. This handles mixed-environment inputs
+        // gracefully and preserves separation between PROD/TEST/DEV.
+        const envGroups: Record<string, string[]> = {};
+        votesToArchive.forEach(v => {
+          const ev = ((v as any).environment) || environment;
+          envGroups[ev] = envGroups[ev] || [];
+          envGroups[ev].push(v.pilot);
+        });
 
-        if (errDel) {
-          console.error('Error deleting palporro_votes during archive:', errDel);
-        } else {
-          console.log('archiveRaceAndMoveVotes: deleted rows from palporro_votes', { deletedCount: Array.isArray(deletedRows) ? deletedRows.length : 0 });
+        for (const ev of Object.keys(envGroups)) {
+          const pilots = envGroups[ev];
+          console.log('archiveRaceAndMoveVotes: deleting from palporro_votes for environment', ev, { pilots });
+          const { data: deletedRows, error: errDel } = await client
+            .from('palporro_votes')
+            .delete()
+            .in('pilot', pilots)
+            .eq('environment', ev)
+            .select();
+
+          if (errDel) {
+            console.error('Error deleting palporro_votes during archive for environment ' + ev + ':', errDel);
+          } else {
+            console.log('archiveRaceAndMoveVotes: deleted rows from palporro_votes', { env: ev, deletedCount: Array.isArray(deletedRows) ? deletedRows.length : 0 });
+          }
         }
       } catch (e) {
         console.error('Failed deleting palporro_votes during archive:', e);
@@ -582,6 +599,8 @@ export const updateRaceResults = async (
     console.error('Error updating race results:', error);
     return false;
   }
+
+  console.log('updateRaceResults: matched/updated rows', data);
 
   if (!data || data.length === 0) {
     console.warn('No race found to update with race_number:', raceNumber, 'and environment:', environment);
