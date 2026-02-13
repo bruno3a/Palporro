@@ -1905,13 +1905,13 @@ const arraysEqual = (a: string[], b: string[]) => {
             onClick={() => setVotingState(prev => ({ ...prev, isOpen: !prev.isOpen }))}
             className={`fixed right-0 top-1/2 -translate-y-1/2 z-[60] ${
               !votingState.hasVoted ? 'bg-red-700 text-white shadow-2xl border-red-700 animate-pulse' : 'bg-zinc-900 border-zinc-700'
-            } rounded-l-2xl p-3 md:p-4 transition-all hover:pr-4 md:hover:pr-6 group`}
+            } rounded-l-2xl p-3 md:p-4 transition-all hover:pr-4 md:hover:pr-6 group border-2`}
             style={{ writingMode: 'vertical-rl' }}
             title="Abrir panel de votación"
           >
             <div className="flex items-center gap-2 md:gap-3">
               {!votingState.hasVoted && (
-                <span className="w-2 h-2 md:w-3 md:h-3 bg-red-600 rounded-full animate-ping"></span>
+                <span className="w-2 h-2 md:w-3 md:h-3 bg-white rounded-full animate-ping"></span>
               )}
               <span className={`font-black uppercase tracking-widest text-xs md:text-sm ${
                 !votingState.hasVoted ? 'text-white' : 'text-zinc-400'
@@ -1924,12 +1924,15 @@ const arraysEqual = (a: string[], b: string[]) => {
           {/* Mobile voting quick access (shows text 'Próxima Fecha' on small screens) */}
           <button
             onClick={() => setVotingState(prev => ({ ...prev, isOpen: !prev.isOpen }))}
-            className={`md:hidden fixed right-4 bottom-24 z-[70] px-4 py-3 rounded-2xl font-black text-sm tracking-widest flex items-center gap-3 ${
-              !votingState.hasVoted ? 'bg-red-600 text-white shadow-2xl animate-pulse' : 'bg-zinc-800 text-zinc-100'
+            className={`md:hidden fixed right-4 bottom-24 z-[70] px-4 py-3 rounded-2xl font-black text-sm tracking-widest flex items-center gap-3 border-2 ${
+              !votingState.hasVoted ? 'bg-red-600 text-white shadow-2xl animate-pulse border-red-600' : 'bg-zinc-800 text-zinc-100 border-zinc-700'
             }`}
           >
             <span>VOTÁ</span>
             <span className="text-[11px] opacity-80">• Próxima Fecha</span>
+            {!votingState.hasVoted && (
+              <span className="w-2 h-2 bg-white rounded-full animate-ping"></span>
+            )}
           </button>
 
           {/* Panel de votación */}
@@ -2428,6 +2431,29 @@ const arraysEqual = (a: string[], b: string[]) => {
                   {tracks.map((t, idx) => {
                     const isNext = idx === nextTrackIndex;
                     const isTraining = idx === 0;
+                    const hasVotes = votingState.allVotes.length > 0;
+                    
+                    // Si es la próxima pista pero no hay votos, mostrar "Pendiente de votación"
+                    if (isNext && !hasVotes) {
+                      return (
+                        <div key={`pending-${idx}`} className="w-full p-6 rounded-xl border-2 bg-gradient-to-br from-red-950/40 to-zinc-900/40 border-red-600/70 shadow-xl shadow-red-900/20 flex flex-col items-center justify-center relative overflow-hidden">
+                          <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>
+                          <div className="absolute inset-0 bg-gradient-to-r from-red-600/5 to-transparent pointer-events-none"></div>
+                          <div className="flex flex-col items-center gap-3 text-center relative z-10">
+                            <div className="relative">
+                              <svg className="w-12 h-12 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-600 rounded-full animate-ping"></div>
+                              <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-600 rounded-full"></div>
+                            </div>
+                            <span className="text-[15px] font-black uppercase italic tracking-tighter text-red-400">⚠️ Pendiente de votación</span>
+                            <span className="text-[11px] text-red-300/60 font-mono tracking-wide">Esperando primer voto para definir próxima pista</span>
+                          </div>
+                        </div>
+                      );
+                    }
+                    
                     return (
                       <button key={t.name} onClick={() => handleTrackClick(t.name)} className={`w-full p-4 rounded-xl border transition-all flex items-center justify-between relative overflow-hidden group ${t.completed ? 'bg-zinc-800/20 border-zinc-700 hover:border-red-600/40' : isNext ? 'bg-zinc-900 border-red-600/50 shadow-xl' : 'bg-zinc-950 border-zinc-800 hover:border-zinc-600'}`}>
                         {isNext && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>}
