@@ -263,16 +263,14 @@ const arraysEqual = (a: string[], b: string[]) => {
     }
   }, []);
 
-  // Load race history on mount (use TEST environment for development)
+  // Load race history on mount
   useEffect(() => {
     (async () => {
       try {
         const env = getEnvironment();
-        // Default to TEST when running locally / development
-        const fetchEnv = env || 'TEST';
-        const history = await getRaceHistory(fetchEnv as any);
+        const history = await getRaceHistory(env as any);
         setRaceHistory(history || []);
-        console.log('Initial raceHistory load:', (history || []).length, 'env:', fetchEnv);
+        console.log('Initial raceHistory load:', (history || []).length, 'env:', env);
       } catch (err) {
         console.error('Error loading race history on mount:', err);
       }
