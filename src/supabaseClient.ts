@@ -356,7 +356,7 @@ export const saveRaceHistory = async (
   scheduledDay: string,
   scheduledTime: string,
   confirmedPilots: string[],
-  environment: 'PROD' | 'DEV'
+  environment: 'PROD' | 'TEST'
 ): Promise<boolean> => {
   const client = getClient(environment);
   console.log('saveRaceHistory: environment, raceNumber, trackName', { environment, raceNumber, trackName });

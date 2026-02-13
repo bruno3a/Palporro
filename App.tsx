@@ -1375,22 +1375,58 @@ const arraysEqual = (a: string[], b: string[]) => {
     return () => { mounted = false; clearInterval(id); };
   }, []);
 
-  // Cargar historial de carreras al montar - intentar ambos environments (PROD y DEV)
+  // Cargar historial de carreras al montar - respetar environment actual
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        const prod = await getRaceHistory('PROD');
-        const test = await getRaceHistory('TEST');
-        const combined = [...(prod || []), ...(test || [])];
-        // deduplicate by race_number or id, prefer DEV over PROD if duplicate
+        const env = getEnvironment();
+
+        // In production we MUST only surface PROD rows. In dev/local we
+        // prefer TEST data (and optionally include DEV). This prevents
+        // TEST rows from bleeding into the PROD UI.
+        let fetched: RaceHistory[] = [];
+
+        if (env === 'PROD') {
+          const prod = await getRaceHistory('PROD');
+          fetched = prod || [];
+        } else {
+          // development: prefer TEST but include PROD if useful
+          const test = await getRaceHistory('TEST');
+          const prod = await getRaceHistory('PROD');
+          fetched = [...(test || []), ...(prod || [])];
+        }
+
+        // Deduplicate by race_number (or id) and ensure PROD rows win when
+        // duplicates exist. This guarantees production data is authoritative
+        // whenever both TEST and PROD rows are present for the same race.
         const map: Record<string, RaceHistory> = {};
-        combined.forEach(r => {
-          const key = String(r.race_number) || r.id;
-          // prefer DEV entries (they come later in the array)
-          map[key] = r;
+        fetched.forEach(r => {
+          const key = String(r.race_number) || r.id || '';
+          if (!key) return;
+
+          const existing = map[key];
+          if (!existing) {
+            map[key] = r as RaceHistory & { environment?: string };
+            return;
+          }
+
+          // If either row explicitly carries an environment field, prefer
+          // the PROD one. If none is PROD, keep the existing entry (first).
+          const exEnv = (existing as any).environment;
+          const newEnv = (r as any).environment;
+          if (exEnv === 'PROD') {
+            // keep existing
+            return;
+          }
+          if (newEnv === 'PROD') {
+            map[key] = r as RaceHistory & { environment?: string };
+            return;
+          }
+          // otherwise keep the existing (stable ordering)
         });
-        const merged = Object.values(map).sort((a,b) => b.race_number - a.race_number);
-        console.log('Historial de carreras cargado (PROD+TEST):', merged);
+
+        const merged = Object.values(map).sort((a,b) => (b.race_number || 0) - (a.race_number || 0));
+        console.log('Historial de carreras cargado (env:', env, '):', merged.length);
         setRaceHistory(merged);
       } catch (err) {
         console.error('Error cargando historial de carreras:', err);
