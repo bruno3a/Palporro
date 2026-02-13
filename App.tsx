@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { GoogleGenAI } from '@google/genai';
@@ -6,6 +5,7 @@ import { PILOTS, INITIAL_TRACKS, SCRIPT_SYSTEM_INSTRUCTION_DYNAMIC, VOICE_OPTION
 import { decode, encode, decodeAudioData, createWavBlob } from './audioUtils';
 import { TrackStatus, Standing } from './types';
 import { getVotes, addVote, subscribeToVotes, getVotingStats, getEnvironment, getVoteByIp, TimeSlot } from "./src/supabaseClient";
+import { saveRaceHistory, getRaceHistory, updateRaceResults, upsertRaceResults, RaceHistory, RaceResult } from "./src/supabaseClient";
 
 interface VoteData {
   slots: TimeSlot[];
@@ -28,9 +28,26 @@ const VOTING_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves'];
 const VOTING_TIMES = ['18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '22:00', '22:30', '23:00'];
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'radio'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'radio' | 'history'>('dashboard');
+  const [raceHistory, setRaceHistory] = useState<RaceHistory[]>([]);
+  const [selectedHistoryRace, setSelectedHistoryRace] = useState<RaceHistory | null>(null);
+  const [showResultsModal, setShowResultsModal] = useState(false);
   const [radioAccessCode, setRadioAccessCode] = useState('');
   const [isRadioUnlocked, setIsRadioUnlocked] = useState(false);
+  // Modal-local code to unlock editing of race results (must enter code here)
+  const [resultsCodeInput, setResultsCodeInput] = useState('');
+  const [isResultsUnlocked, setIsResultsUnlocked] = useState(false);
+  // Inline unlock overlay state for individual history cards
+  const [historyUnlockTarget, setHistoryUnlockTarget] = useState<string | null>(null);
+  const [historyUnlockInput, setHistoryUnlockInput] = useState('');
+  // Editing results state
+  const [isEditingResults, setIsEditingResults] = useState(false);
+  const [editingResults, setEditingResults] = useState<RaceResult[] | null>(null);
+  const [isSavingResults, setIsSavingResults] = useState(false);
+  const [showJsonImport, setShowJsonImport] = useState(false);
+  const [jsonInput, setJsonInput] = useState('');
+  const [sessionInfo, setSessionInfo] = useState<any>(null);
+  const [relevantData, setRelevantData] = useState<any>(null);
   const RADIO_CODE = '1290';
   const geminiKey = import.meta.env.VITE_GEMINI_API_KEY
     || (window as any).__PALPORRO_CONFIG?.VITE_GEMINI_API_KEY
@@ -136,6 +153,28 @@ const arraysEqual = (a: string[], b: string[]) => {
   const sa = [...a].sort();
   const sb = [...b].sort();
   return sa.every((v, i) => v === sb[i]);
+};
+
+// Normalize track/pilot names for robust matching: remove diacritics, punctuation,
+// collapse spaces, strip common suffixes (gp, gran premio, grand prix) and lowercase.
+const normalizeName = (s?: string | null) => {
+  if (!s) return '';
+  try {
+    let t = s.toString().trim().toLowerCase();
+    // remove diacritics
+    t = t.normalize('NFD').replace(/\p{Diacritic}/gu, '');
+    // replace common connectors and punctuation with spaces
+    t = t.replace(/[_\-\.|,/\\()\[\]']/g, ' ');
+    // remove words like 'gp', 'gran premio', 'grand prix', 'g p'
+    t = t.replace(/\b(gp|g\.p\.|gran premio|grand prix)\b/g, '');
+    // remove non-alphanumeric (keep spaces)
+    t = t.replace(/[^a-z0-9\s]/g, '');
+    // collapse multiple spaces
+    t = t.replace(/\s+/g, ' ').trim();
+    return t;
+  } catch (e) {
+    return (s || '').toString().trim().toLowerCase();
+  }
 };
 
   const [votingState, setVotingState] = useState<VotingState>(() => {
@@ -470,6 +509,213 @@ const arraysEqual = (a: string[], b: string[]) => {
 
   const displayedHistory = emissionHistory.length === 0 ? [defaultEmission] : emissionHistory;
 
+  // When a track is clicked from portada, open its results modal and allow editing via radio code
+  const handleTrackClick = async (trackName: string) => {
+    // Try to find cached race first (robust matching: exact, GP suffix, case-insensitive, includes)
+    const normalize = (s: string) => s?.toString().trim().toLowerCase() || '';
+    const nameNorm = normalize(trackName);
+
+    let found = raceHistory.find(r => {
+      const tn = normalize(r.track_name || '');
+      return tn === nameNorm || tn === `${nameNorm} gp` || tn.includes(nameNorm) || nameNorm.includes(tn);
+    });
+
+    // If not found, fetch latest history from PROD and TEST, merge and retry
+    if (!found) {
+      try {
+        const [prod, test] = await Promise.all([getRaceHistory('PROD'), getRaceHistory('TEST')]);
+        const combined = [...(test || []), ...(prod || [])];
+        setRaceHistory(prev => {
+          // merge by id or race_number
+          const map: Record<string, RaceHistory> = {};
+          [...combined, ...(prev || [])].forEach(r => { map[String(r.race_number) || r.id] = r; });
+          return Object.values(map).sort((a,b) => b.race_number - a.race_number);
+        });
+
+        found = combined.find(r => {
+          const tn = normalize(r.track_name || '');
+          return tn === nameNorm || tn === `${nameNorm} gp` || tn.includes(nameNorm) || nameNorm.includes(tn);
+        });
+      } catch (err) {
+        console.error('Error fetching race history on demand:', err);
+      }
+    }
+
+    if (found) {
+      setSelectedHistoryRace(found);
+      setShowResultsModal(true);
+    } else if (isRadioUnlocked) {
+      // Usuario tiene el código: abrir modal vacío para permitir crear/editar resultados manualmente
+      const empty: RaceHistory = {
+        id: `manual-${Date.now()}`,
+        race_number: -1,
+        track_name: trackName,
+        scheduled_date: new Date().toISOString(),
+        scheduled_day: new Date().toLocaleDateString('es-AR', { weekday: 'long' }),
+        scheduled_time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+        confirmed_pilots: [],
+        race_completed: false,
+        race_results: [],
+        created_at: new Date().toISOString()
+      };
+      setSelectedHistoryRace(empty);
+      // Open modal in edit mode with a single empty row so user can add details immediately
+      setEditingResults([{ pilot: '', position: 1, totalTime: '', bestLap: '', isWinner: false }]);
+      setIsEditingResults(true);
+      setShowResultsModal(true);
+    } else {
+      setSelectedHistoryRace(null);
+      alert('No hay resultados archivados para esta pista');
+    }
+  };
+
+  // Función para parsear el JSON del formato de carrera
+  const parseRaceJson = (jsonStr: string): { results: RaceResult[]; sessionInfo: any; relevantData: any } | null => {
+    try {
+      const data = JSON.parse(jsonStr);
+      
+      if (!data.clasificacion_completa || !Array.isArray(data.clasificacion_completa)) {
+        alert('El JSON no tiene el formato correcto. Debe contener "clasificacion_completa"');
+        return null;
+      }
+
+      const results: RaceResult[] = data.clasificacion_completa.map((item: any) => ({
+        pilot: item.nombre || '',
+        position: item.posicion || 0,
+        totalTime: item.tiempo_total || '',
+        bestLap: item.mejor_vuelta || '',
+        isWinner: item.posicion === 1,
+        isNoShow: item.estado?.toLowerCase().includes('no presentó') || item.estado?.toLowerCase().includes('no show') || false,
+        laps: item.vueltas,
+        incidents: item.incidentes,
+        status: item.estado,
+        bestSectors: item.mejores_sectores ? {
+          S1: item.mejores_sectores.S1,
+          S2: item.mejores_sectores.S2,
+          S3: item.mejores_sectores.S3
+        } : undefined
+      }));
+
+      // Normalize session info and relevant data keys to the shape used by the app
+      const rawSession = data.sesion_info || data.session_info || null;
+      const sessionInfo = rawSession ? {
+        pista: rawSession.pista || rawSession.track || null,
+        formato: rawSession.formato || rawSession.format || null,
+        vehicle: rawSession.vehiculo_unico || rawSession.vehicle || null
+      } : null;
+
+      const rawRelevant = data.datos_relevantes || data.relevant_data || null;
+      const relevantData = rawRelevant ? {
+        performance: rawRelevant.rendimiento || rawRelevant.performance || rawRelevant.performance_text || null,
+        summary: rawRelevant.resumen_jornada || rawRelevant.summary || rawRelevant.summary_text || null
+      } : null;
+
+      return {
+        results,
+        sessionInfo,
+        relevantData
+      };
+    } catch (err) {
+      console.error('Error parsing JSON:', err);
+      alert('Error al parsear el JSON. Verificá que sea un JSON válido.');
+      return null;
+    }
+  };
+
+  const handleImportJson = () => {
+    const parsed = parseRaceJson(jsonInput);
+    if (parsed) {
+      setEditingResults(parsed.results);
+      setSessionInfo(parsed.sessionInfo);
+      setRelevantData(parsed.relevantData);
+      setShowJsonImport(false);
+      setJsonInput('');
+      alert(`Se importaron ${parsed.results.length} resultados correctamente`);
+    }
+  };
+
+  // Función para actualizar standings después de guardar resultados
+  const updateStandingsFromRace = (results: RaceResult[]) => {
+    if (!results || results.length === 0) return;
+    // Helper: normalizar nombre de piloto para comparar
+    const normalize = (n?: string) => (n || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+
+    // Helper: parsear un tiempo de vuelta en formato "m:ss.xxx" o "ss.xxx" a segundos numéricos
+    const parseLapSeconds = (t?: string) => {
+      if (!t) return NaN;
+      const s = t.trim();
+      // Si contiene ':' interpretar como mm:ss(.ms)
+      if (s.includes(':')) {
+        const parts = s.split(':').map(p => p.trim());
+        // soportar mm:ss.xxx o h:mm:ss pero normalmente mm:ss.xxx
+        let seconds = 0;
+        while (parts.length > 0) {
+          const part = parts.pop();
+          if (!part) continue;
+          seconds = seconds / 60 + parseFloat(part);
+        }
+        // Si la conversión es extraña, fallback
+        if (isNaN(seconds)) return NaN;
+        return seconds;
+      }
+
+      // Si no tiene ':', intentar parseFloat directo
+      const v = parseFloat(s.replace(',', '.'));
+      return isNaN(v) ? NaN : v;
+    };
+
+    // Calcular mejor vuelta (menor tiempo en segundos)
+    const lapSeconds = results
+      .filter(r => r.bestLap && !r.isNoShow)
+      .map(r => ({ r, s: parseLapSeconds(r.bestLap) }))
+      .filter(x => !isNaN(x.s))
+      .sort((a, b) => a.s - b.s);
+    const bestLapSeconds = lapSeconds.length > 0 ? lapSeconds[0].s : NaN;
+
+    setStandings(prev => {
+      const updated = [...prev];
+
+      const totalPositions = results.filter(r => !r.isNoShow).length;
+
+      results.forEach(result => {
+        if (result.isNoShow) return; // No dar puntos a pilotos que no se presentaron
+
+        const target = normalize(result.pilot);
+        let pilotIndex = updated.findIndex(s => normalize(s.pilot) === target);
+
+        // Intentar coincidencias parciales si no se encuentra exacta (por variantes de nombre)
+        if (pilotIndex === -1) {
+          pilotIndex = updated.findIndex(s => normalize(s.pilot).startsWith(target) || target.startsWith(normalize(s.pilot)));
+        }
+
+        const pos = Number(result.position) || 0;
+        const positionPoints = Math.max(0, totalPositions - pos + 1);
+        const fastestLapPoint = (!isNaN(bestLapSeconds) && Math.abs(parseLapSeconds(result.bestLap) - bestLapSeconds) < 0.001) ? 1 : 0;
+        const racePoints = positionPoints + fastestLapPoint;
+
+        if (pilotIndex === -1) {
+          // Si no existe el piloto en standings, lo agregamos para no perder puntos
+          console.warn('Pilot not found in standings, adding:', result.pilot);
+          updated.push({ pilot: result.pilot || 'Unknown', points: racePoints, lastResult: `P${pos}`, racesRun: 1, incidences: result.incidents || 0 });
+          return;
+        }
+
+        updated[pilotIndex] = {
+          ...updated[pilotIndex],
+          points: (updated[pilotIndex].points || 0) + racePoints,
+          racesRun: (updated[pilotIndex].racesRun || 0) + 1,
+          lastResult: `P${pos}`,
+          incidences: (updated[pilotIndex].incidences || 0) + (result.incidents || 0),
+        };
+      });
+
+      // Ordenar por puntos
+      return updated.sort((a, b) => b.points - a.points);
+    });
+
+    console.log('Standings updated with race results');
+  };
+
   // Agregar estas funciones antes del return del componente
   const handleVoteSubmit = async () => {
     console.log('handleVoteSubmit triggered', {
@@ -720,47 +966,143 @@ const arraysEqual = (a: string[], b: string[]) => {
     };
   };
 
+
   const getPilotConfirmation = (pilotName: string) => {
-    const vote = votingState.allVotes.find(v => v.pilot === pilotName);
-    if (!vote) return { confirmed: false, availability: null };
+  const vote = votingState.allVotes.find(v => v.pilot === pilotName);
+  if (!vote) return { confirmed: false, availability: null };
 
-    const nextRace = getNextRaceInfo();
-    if (!nextRace) return { confirmed: false, availability: null };
+  const nextRace = getNextRaceInfo();
+  if (!nextRace) return { confirmed: false, availability: null };
 
-    const hasDay = (vote.slots || []).some(s => s.day === nextRace.day);
-    const hasTime = (vote.slots || []).some(s => s.time === nextRace.time && s.day === nextRace.day);
+  const hasDay = (vote.slots || []).some(s => s.day === nextRace.day);
+  const hasTime = (vote.slots || []).some(s => s.time === nextRace.time && s.day === nextRace.day);
 
-    return {
-      confirmed: hasDay && hasTime,
-      availability: hasDay ? (hasTime ? 'confirmed' : 'partial') : 'unavailable'
-    };
+  return {
+    confirmed: hasDay && hasTime,
+    availability: hasDay ? (hasTime ? 'confirmed' : 'partial') : 'unavailable'
   };
+};
 
-  // Clear votes after the confirmed date has passed so pilot tags are removed
-  useEffect(() => {
-    const checkAndClear = () => {
-      const next = getNextRaceInfo();
-      if (!next) return;
-      // If the scheduled race date/time is in the past, reset voting window and clear votes
-      if (next.date.getTime() <= Date.now()) {
-        // compute previous Sunday in Argentina timezone
+  // Función para guardar la carrera actual en el historial y resetear votación
+  const archiveCurrentRaceAndReset = async () => {
+    const nextRace = getNextRaceInfo();
+    if (!nextRace || nextRace.totalVotes === 0) {
+      console.log('No hay carrera para archivar');
+      return;
+    }
+
+    const trackIndex = nextTrackIndex;
+    if (trackIndex === -1) {
+      console.log('No hay próxima pista');
+      return;
+    }
+
+    const trackName = tracks[trackIndex].name;
+    const confirmedPilots = votingState.allVotes
+      .filter(v => (v.slots || []).some(s => s.day === nextRace.day && s.time === nextRace.time))
+      .map(v => v.pilot);
+
+    console.log('Archivando carrera:', {
+      trackName,
+      date: nextRace.date,
+      confirmedPilots
+    });
+
+    const raceNumber = completedCount + 1;
+    const environment = getEnvironment() as 'PROD' | 'TEST';
+
+    const success = await saveRaceHistory(
+      raceNumber,
+      trackName,
+      nextRace.date,
+      nextRace.day,
+      nextRace.time,
+      confirmedPilots,
+      environment
+    );
+
+    if (success) {
+      console.log('Carrera archivada exitosamente en Supabase');
+      
+      // Resetear votación
+      const newState = {
+        isOpen: false,
+        hasVoted: false,
+        selectedSlots: [],
+        selectedDays: [],
+        selectedTimes: [],
+        userPilot: votingState.userPilot, // Mantener piloto seleccionado
+        allVotes: []
+      };
+      
+      setVotingState(newState);
+      
+      try {
+        localStorage.removeItem('palporro_voting');
+        // Resetear fecha de inicio de votación al domingo actual
         const now = new Date();
         const argNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
         const d = new Date(argNow);
         const dow = d.getDay();
         d.setDate(d.getDate() - dow);
         d.setHours(0,0,0,0);
-        try { localStorage.setItem('palporro_voting_start', d.toISOString()); } catch(e){}
-
-        setVotingState(prev => ({ ...prev, allVotes: [], hasVoted: false, selectedSlots: [], selectedDays: [], selectedTimes: [] }));
-        try { localStorage.removeItem('palporro_voting'); } catch(e){}
+        localStorage.setItem('palporro_voting_start', d.toISOString());
+        console.log('Votación reseteada correctamente');
+      } catch (e) {
+        console.error('Error resetting voting:', e);
+      }
+    } else {
+      console.error('Error al archivar carrera en Supabase');
+    }
+  };
+    
+  // Archivar carrera y resetear votación cuando:
+  // 1. La fecha confirmada ya pasó, O
+  // 2. Es sábado después de las 18:00 (cierre de semana de votación)
+  useEffect(() => {
+    const checkArchiveAndReset = async () => {
+      const now = new Date();
+      const argNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+      
+      const next = getNextRaceInfo();
+      
+      // Condición 1: La carrera confirmada ya pasó
+      if (next && next.isDefinitive && next.date.getTime() <= argNow.getTime()) {
+        console.log('Carrera confirmada ya pasó, archivando...');
+        const lastArchive = localStorage.getItem('palporro_last_archive');
+        const lastArchiveDate = lastArchive ? new Date(lastArchive) : null;
+        
+        // Evitar archivar múltiples veces la misma carrera
+        if (!lastArchiveDate || argNow.getTime() - lastArchiveDate.getTime() > 12 * 60 * 60 * 1000) {
+          await archiveCurrentRaceAndReset();
+          localStorage.setItem('palporro_last_archive', argNow.toISOString());
+        }
+        return;
+      }
+      
+      // Condición 2: Es sábado después de las 18:00 (fin de semana de votación)
+      const day = argNow.getDay(); // 6 = Sábado
+      const hours = argNow.getHours();
+      
+      if (day === 6 && hours >= 18 && next && next.totalVotes > 0) {
+        console.log('Es sábado 18:00+, fin de semana de votación');
+        const lastArchive = localStorage.getItem('palporro_last_archive');
+        const lastArchiveDate = lastArchive ? new Date(lastArchive) : null;
+        
+        // Solo archivar una vez por semana
+        if (!lastArchiveDate || argNow.getTime() - lastArchiveDate.getTime() > 6 * 24 * 60 * 60 * 1000) {
+          console.log('Archivando carrera por cierre de semana...');
+          await archiveCurrentRaceAndReset();
+          localStorage.setItem('palporro_last_archive', argNow.toISOString());
+        }
       }
     };
 
-    checkAndClear();
-    const id = setInterval(checkAndClear, 30 * 1000); // check every 30s
+    checkArchiveAndReset();
+    // Verificar cada 30 segundos
+    const id = setInterval(checkArchiveAndReset, 30 * 1000);
     return () => clearInterval(id);
-  }, [votingState.allVotes]);
+  }, [votingState.allVotes, completedCount, nextTrackIndex]);
 
   // Cargar votos al inicio e identificar piloto por IP
   useEffect(() => {
@@ -868,6 +1210,31 @@ const arraysEqual = (a: string[], b: string[]) => {
     return () => { mounted = false; clearInterval(id); };
   }, []);
 
+  // Cargar historial de carreras al montar - intentar ambos environments (PROD y TEST)
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const prod = await getRaceHistory('PROD');
+        const test = await getRaceHistory('TEST');
+        const combined = [...(prod || []), ...(test || [])];
+        // deduplicate by race_number or id, prefer TEST over PROD if duplicate
+        const map: Record<string, RaceHistory> = {};
+        combined.forEach(r => {
+          const key = String(r.race_number) || r.id;
+          // prefer TEST entries (they come later in the array)
+          map[key] = r;
+        });
+        const merged = Object.values(map).sort((a,b) => b.race_number - a.race_number);
+        console.log('Historial de carreras cargado (PROD+TEST):', merged);
+        setRaceHistory(merged);
+      } catch (err) {
+        console.error('Error cargando historial de carreras:', err);
+      }
+    };
+
+    loadHistory();
+  }, []);
+
   // Agregar función para detectar si hubo cambios
   const hasVoteChanged = (): boolean => {
     const currentVote = votingState.allVotes.find(v => v.pilot === votingState.userPilot);
@@ -947,7 +1314,7 @@ const arraysEqual = (a: string[], b: string[]) => {
             <button onClick={() => setActiveTab('radio')} className={`px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'radio' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'}`}>
               RADIO
             </button>
-            <button onClick={() => setShowHistoryModal(true)} className="hidden sm:flex px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg text-zinc-500 hover:text-red-600 items-center gap-1 md:gap-2">
+            <button onClick={() => setShowHistoryModal(true)} className={`px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'history' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'} items-center gap-1 md:gap-2`}>
               <svg className="w-3 h-3 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
               </svg>
@@ -1693,7 +2060,7 @@ const arraysEqual = (a: string[], b: string[]) => {
                     const isNext = idx === nextTrackIndex;
                     const isTraining = idx === 0;
                     return (
-                      <button key={t.name} onClick={() => setSelectedTrack(t.name)} className={`w-full p-4 rounded-xl border transition-all flex items-center justify-between relative overflow-hidden group ${t.completed ? 'bg-zinc-800/20 border-zinc-700 hover:border-red-600/40' : isNext ? 'bg-zinc-900 border-red-600/50 shadow-xl' : 'bg-zinc-950 border-zinc-800 hover:border-zinc-600'}`}>
+                      <button key={t.name} onClick={() => handleTrackClick(t.name)} className={`w-full p-4 rounded-xl border transition-all flex items-center justify-between relative overflow-hidden group ${t.completed ? 'bg-zinc-800/20 border-zinc-700 hover:border-red-600/40' : isNext ? 'bg-zinc-900 border-red-600/50 shadow-xl' : 'bg-zinc-950 border-zinc-800 hover:border-zinc-600'}`}>
                         {isNext && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>}
                         <div className="flex items-center gap-5">
                             <span className={`text-[11px] font-mono font-black ${t.completed ? 'text-zinc-500' : isNext ? 'text-red-600' : 'text-zinc-700'}`}>{idx < 10 ? `0${idx}` : idx}</span>
@@ -1724,6 +2091,71 @@ const arraysEqual = (a: string[], b: string[]) => {
                 </div>
             </section>
           </div>
+
+        ) : activeTab === 'history' ? (
+        /* PANTALLA ARCHIVO (EMISIONES) - muestra emisiones de radio */
+        <div className="flex items-center justify-center min-h-[60vh] animate-in fade-in slide-in-from-right-4 duration-700">
+          <div className="bg-zinc-900 border-2 border-zinc-800 rounded-[3rem] p-12 md:p-16 shadow-2xl max-w-2xl w-full">
+            <div className="text-center mb-10">
+              <div className="inline-block p-6 bg-red-600/10 rounded-3xl mb-6">
+                <svg className="w-16 h-16 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                </svg>
+              </div>
+              <h2 className="text-3xl font-black uppercase italic text-white mb-3">Archivo de Emisiones</h2>
+              <p className="text-sm text-zinc-500 font-black uppercase tracking-wider">Archivo completo de emisiones de radio</p>
+            </div>
+            <div className="p-8 space-y-8">
+              {(() => {
+                const first = displayedHistory[0];
+                const hasReal = emissionHistory.length > 0;
+                return (
+                  <div className="bg-zinc-950 p-6 md:p-8 rounded-2xl border border-zinc-800 flex flex-col md:flex-row items-start gap-6">
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <div className="font-black uppercase text-lg">{first.voice} { !hasReal && <span className="ml-2 text-xs text-zinc-400 font-normal">(Emisión por defecto)</span> }</div>
+                        <div className="text-[10px] text-zinc-500">{new Date(first.timestamp).toLocaleString('es-AR')}</div>
+                      </div>
+                      <div className="text-zinc-300 italic mt-3 text-sm script-hidden">"Guion disponible"</div>
+                      <audio controls src={first.audioUrl} className="w-full mt-4 rounded-lg" />
+                    </div>
+
+                    <div className="flex flex-col gap-3 md:gap-4 md:w-40">
+                      <a href={first.audioUrl} download={`palporro-${first.id}.wav`} className="px-4 py-3 bg-zinc-800 rounded uppercase text-[11px] font-black text-center">Descargar</a>
+                      {hasReal ? (
+                        <button onClick={() => handleDeleteEmission(first.id)} className="px-4 py-3 bg-red-700 rounded uppercase text-[11px] font-black">Borrar</button>
+                      ) : (
+                        <button disabled className="px-4 py-3 bg-zinc-700 rounded uppercase text-[11px] font-black opacity-60">No editable</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {emissionHistory.length > 1 && (
+                <div className="space-y-4">
+                  {emissionHistory.slice(1).map(e => (
+                    <div key={e.id} className="bg-zinc-950 p-4 rounded-2xl border border-zinc-800 flex items-start gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                         <div className="font-black uppercase">{getArtisticName(e.voice)}</div>
+                          <div className="text-[10px] text-zinc-500">{new Date(e.timestamp).toLocaleString('es-AR')}</div>
+                        </div>
+                        <div className="text-zinc-300 italic mt-2 script-hidden">"Guion disponible"</div>
+                        <audio controls src={e.audioUrl} className="w-full mt-3" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <a href={e.audioUrl} download={`palporro-${e.id}.wav`} className="px-3 py-2 bg-zinc-800 rounded uppercase text-[10px] font-black">Descargar</a>
+                        <button onClick={() => handleDeleteEmission(e.id)} className="px-3 py-2 bg-red-700 rounded uppercase text-[10px] font-black">Borrar</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         ) : !isRadioUnlocked ? (
           /* PANTALLA DE ACCESO A RADIO */
           <div className="flex items-center justify-center min-h-[60vh] animate-in fade-in slide-in-from-right-4 duration-700">
@@ -1908,37 +2340,6 @@ const arraysEqual = (a: string[], b: string[]) => {
         </div>
       </footer>
 
-      {/* POPUP DE RESULTADOS */}
-      {selectedTrack && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm animate-in fade-in duration-300">
-           <div className="bg-zinc-900 border-2 border-red-600/50 rounded-[3rem] w-full max-w-2xl overflow-hidden shadow-[0_0_100px_rgba(220,38,38,0.3)] animate-in zoom-in-95 duration-500">
-              <div className="bg-zinc-800 p-8 border-b border-zinc-700 flex justify-between items-center">
-                 <div><p className="text-[10px] font-black text-red-600 uppercase tracking-[0.5em] mb-2 italic">Histórico de Telemetría</p><h3 className="text-3xl font-black uppercase italic tracking-tighter text-white">{selectedTrack} GP</h3></div>
-                 <button onClick={() => setSelectedTrack(null)} className="p-4 hover:bg-red-600 transition-colors rounded-2xl group"><svg className="w-6 h-6 text-zinc-500 group-hover:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" /></svg></button>
-              </div>
-              <div className="p-10 space-y-8">
-                 <div className="space-y-4">
-                    <h4 className="text-[11px] font-black uppercase tracking-[0.3em] text-zinc-500 border-b border-zinc-800 pb-2 italic">Resultados Finales</h4>
-                    {selectedTrack === 'Training' ? (
-                      <div className="space-y-2">
-                        <div className="bg-zinc-950 p-5 rounded-xl border border-zinc-800 flex justify-between items-center"><span className="flex items-center gap-4"><span className="text-yellow-500 font-black italic">P1</span><span className="font-black uppercase italic tracking-tight">Slayer</span></span><span className="font-mono text-[12px] text-zinc-500">01:42.553</span></div>
-                        <div className="bg-zin c-950 p-5 rounded-xl border border-zinc-800 flex justify-between items-center"><span className="flex items-center gap-4"><span className="text-zinc-400 font-black italic">P2</span><span className="font-black uppercase italic tracking-tight">TheSmokeSeller</span></span><span className="font-mono text-[12px] text-zinc-500">+1.240s</span></div>
-                        <div className="bg-zinc-950 p-5 rounded-xl border border-zinc-800 flex justify-between items-center"><span className="flex items-center gap-4"><span className="text-orange-700 font-black italic">P3</span><span className="font-black uppercase italic tracking-tight">Ale</span></span><span className="font-mono text-[12px] text-zinc-500">+5.892s</span></div>
-                      </div>
-                    ) : (
-                      <div className="bg-zinc-950/50 p-10 rounded-2xl border-2 border-dashed border-zinc-800 flex flex-col items-center justify-center text-zinc-700 text-center"><svg className="w-12 h-12 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><p className="font-black uppercase tracking-[0.4em] text-[10px] italic">Esperando sesión oficial de carrera en Assetto Corsa</p></div>
-                    )}
-                 </div>
-                 <div className="bg-red-600/5 p-6 rounded-2xl border border-red-600/20 italic">
-                    <p className="text-[10px] text-red-600 font-black uppercase tracking-[0.2em] mb-2">Aviso del Comisariato:</p>
-                    <p className="text-[12px] text-zinc-400 font-bold leading-relaxed">"Los datos mostrados para la sesión de Training son resultados provisorios y de carácter puramente demostrativo. Quedan sujetos a los resultados reales procesados vía logs de servidor tras el cierre de cada GP."</p>
-                 </div>
-              </div>
-              <div className="p-8 bg-zinc-950 flex justify-end border-t border-zinc-800"><button onClick={() => setSelectedTrack(null)} className="px-10 py-4 bg-zinc-100 text-zinc-950 font-black uppercase text-[12px] tracking-widest rounded-2xl hover:bg-white transition-all">Cerrar Archivo</button></div>
-           </div>
-        </div>
-      )}
-
       {/* MODAL DE ARCHIVO */}
       {showHistoryModal && (
         <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
@@ -2004,6 +2405,363 @@ const arraysEqual = (a: string[], b: string[]) => {
           </div>
         </div>
       )}
+      {/* MODAL DE RESULTADOS DE CARRERA */}
+      {showResultsModal && (
+  <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 backdrop-blur-md p-4">
+    <div className="bg-zinc-900 border border-zinc-800 w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-3xl shadow-2xl relative">
+      {/* Botón Cerrar */}
+      <button 
+        onClick={() => { setShowResultsModal(false); setIsEditingResults(false); setEditingResults(null); }}
+        className="absolute top-4 right-4 text-white text-2xl"
+      >✕</button>
+
+      {selectedHistoryRace ? (
+        <div className="p-8">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-3xl font-black uppercase italic">{selectedHistoryRace.track_name}</h2>
+                <div className="text-[11px] text-zinc-400 mt-1">{selectedHistoryRace.scheduled_day} • {selectedHistoryRace.scheduled_time}</div>
+                {selectedHistoryRace.session_info && (() => {
+                  const si: any = selectedHistoryRace.session_info as any;
+                  const formato = si?.formato ?? si?.format ?? null;
+                  const vehicle = si?.vehicle ?? si?.vehiculo_unico ?? null;
+                  return (
+                    <div className="text-[10px] text-zinc-500 mt-2">
+                      {formato && (
+                        <span>{formato}</span>
+                      )}
+                      {vehicle && <span className="ml-3">• {vehicle}</span>}
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="flex gap-2 items-center">
+                {!isEditingResults && (
+                  <button
+                    onClick={() => {
+                      const code = prompt('Ingresá el código RADIO para editar:');
+                      if (code === RADIO_CODE) {
+                        const results = selectedHistoryRace.race_results || [];
+                        const initialResults = results.length > 0 
+                          ? JSON.parse(JSON.stringify(results))
+                          : [{ pilot: '', position: 1, totalTime: '', bestLap: '', isWinner: false }];
+                        setEditingResults(initialResults);
+                        setSessionInfo(selectedHistoryRace.session_info || null);
+                        setRelevantData(selectedHistoryRace.relevant_data || null);
+                        setIsEditingResults(true);
+                      } else if (code !== null) {
+                        alert('Código incorrecto');
+                      }
+                    }}
+                    className="bg-zinc-800 hover:bg-zinc-700 text-white font-black py-2 px-4 rounded-xl text-sm transition-all"
+                  >
+                    ✏️ Editar
+                  </button>
+                )}
+                {isEditingResults && (
+                  <>
+                    <button
+                      onClick={async () => {
+                        if (!editingResults) return;
+                        setIsSavingResults(true);
+                        
+                        const finalResults = editingResults.map((r) => ({ ...r }));
+                        const env = getEnvironment() as any;
+                        
+                        try {
+                          console.log('Saving results...', {
+                            trackName: selectedHistoryRace.track_name,
+                            raceId: selectedHistoryRace.id,
+                            raceNumber: selectedHistoryRace.race_number,
+                            resultsCount: finalResults.length,
+                            environment: env,
+                            sessionInfo,
+                            relevantData
+                          });
+
+                          // Usar upsertRaceResults con todos los datos
+                          const result = await upsertRaceResults(
+                            selectedHistoryRace.track_name,
+                            finalResults,
+                            env,
+                            selectedHistoryRace.id,
+                            sessionInfo,
+                            relevantData
+                          );
+
+                          if (result.success && result.race) {
+                            // Actualizar standings con los resultados de la carrera
+                            updateStandingsFromRace(finalResults);
+
+                            // Actualizar el estado local con los datos de Supabase
+                            setRaceHistory(prev => {
+                              const existing = prev.find(r => r.id === result.race!.id);
+                              if (existing) {
+                                return prev.map(r => r.id === result.race!.id ? result.race! : r);
+                              } else {
+                                return [result.race!, ...prev];
+                              }
+                            });
+                            
+                            setSelectedHistoryRace(result.race);
+                            setIsEditingResults(false);
+                            setEditingResults(null);
+                            setSessionInfo(null);
+                            setRelevantData(null);
+                            alert('Resultados guardados correctamente en Supabase. Standings actualizados.');
+                            
+                            // Recargar el historial
+                            const updated = await getRaceHistory(env);
+                            if (updated) {
+                              setRaceHistory(updated);
+                            }
+                          } else {
+                            throw new Error('No se pudo guardar la carrera');
+                          }
+                        } catch (err) {
+                          console.error('Error saving results:', err);
+                          alert('Error guardando resultados. Revisá la consola para más detalles.');
+                        } finally {
+                          setIsSavingResults(false);
+                        }
+                      }}
+                      className="bg-green-600 text-white font-black py-3 px-4 rounded-2xl uppercase text-sm tracking-widest hover:bg-green-700 transition-all shadow-xl flex items-center gap-2"
+                    >
+                      {isSavingResults ? <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" /> : null}
+                      Guardar
+                    </button>
+                    <button onClick={() => { setIsEditingResults(false); setEditingResults(null); }} className="bg-zinc-800 text-zinc-200 font-black py-3 px-4 rounded-2xl">Cancelar</button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Preview: JSON que se va a guardar (ayuda a identificar qué se graba) */}
+            {isEditingResults && editingResults && (
+              <div className="p-4 mt-4 bg-zinc-900 border border-zinc-800 rounded-lg">
+                <div className="text-[11px] font-black text-zinc-400 mb-2">Preview (JSON) — lo que se grabará:</div>
+                <pre className="text-xs bg-zinc-950 p-3 rounded text-zinc-200 overflow-auto max-h-40">{JSON.stringify(editingResults, null, 2)}</pre>
+              </div>
+            )}
+
+            {/* Herramientas de edición */}
+            {isEditingResults && (
+              <>
+                {/* Botones de herramientas en modo edición */}
+                <div className="flex gap-2 mb-4 flex-wrap">
+                  <button
+                    onClick={() => setShowJsonImport(!showJsonImport)}
+                    className="px-4 py-2 bg-blue-600 text-white font-black rounded-xl text-sm hover:bg-blue-700 transition-all"
+                  >
+                    {showJsonImport ? 'Cerrar' : 'Importar JSON'}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setEditingResults(prev => [
+                        ...(prev || []),
+                        { 
+                          pilot: '', 
+                          position: (prev?.length || 0) + 1, 
+                          totalTime: '', 
+                          bestLap: '', 
+                          isWinner: false 
+                        }
+                      ]);
+                    }}
+                    className="px-4 py-2 bg-green-600 text-white font-black rounded-xl text-sm hover:bg-green-700 transition-all"
+                  >
+                    + Agregar Piloto
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Panel de importación de JSON */}
+            {showJsonImport && isEditingResults && (
+              <div className="mb-6 p-6 bg-zinc-950 border-2 border-blue-600/50 rounded-2xl">
+                <h3 className="text-lg font-black uppercase text-blue-400 mb-4">Importar Resultados desde JSON</h3>
+                <p className="text-xs text-zinc-400 mb-4">
+                  Pegá el JSON con el formato de resultados de carrera. Debe contener un array "clasificacion_completa" con los datos de cada piloto.
+                </p>
+                <textarea
+                  value={jsonInput}
+                  onChange={(e) => setJsonInput(e.target.value)}
+                  placeholder='{"sesion_info": {...}, "clasificacion_completa": [...]}'
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-xl p-4 text-zinc-100 font-mono text-xs min-h-[200px] focus:outline-none focus:border-blue-500"
+                />
+                <div className="flex gap-3 mt-4">
+                  <button
+                    onClick={handleImportJson}
+                    className="px-6 py-3 bg-blue-600 text-white font-black rounded-xl hover:bg-blue-700 transition-all"
+                  >
+                    Importar
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowJsonImport(false);
+                      setJsonInput('');
+                    }}
+                    className="px-6 py-3 bg-zinc-700 text-white font-black rounded-xl hover:bg-zinc-600 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
+
+           {/* Render de los resultados (editable si isEditingResults) */}
+           <div className="grid gap-4">
+             {(isEditingResults ? editingResults || [] : selectedHistoryRace.race_results || []).map((res, idx) => (
+               <div key={idx} className="bg-zinc-800 p-4 rounded-xl flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                 <div className="flex items-center gap-3 flex-1">
+                   <div className="w-10">
+                     {isEditingResults ? (
+                       <input type="number" value={res.position} onChange={(e) => {
+                         const val = parseInt(e.target.value || '0', 10);
+                         setEditingResults(prev => {
+                           if (!prev) return prev;
+                           const copy = [...prev];
+                           copy[idx] = { ...copy[idx], position: val };
+                           return copy;
+                         });
+                       }} className="w-16 bg-zinc-900 p-2 rounded" />
+                     ) : (
+                       <span className="font-bold">{res.position}.</span>
+                     )}
+                   </div>
+                   <div className="flex-1">
+                     {isEditingResults ? (
+                       <input value={res.pilot} onChange={(e) => setEditingResults(prev => {
+                         if (!prev) return prev;
+                         const copy = [...prev];
+                         copy[idx] = { ...copy[idx], pilot: e.target.value };
+                         return copy;
+                       })} className="bg-zinc-900 p-2 rounded w-full" placeholder="Nombre del piloto" />
+                     ) : (
+                       <span className="font-bold">{res.pilot}</span>
+                     )}
+                   </div>
+                 </div>
+
+                 <div className="flex items-center gap-3 flex-wrap">
+                   {isEditingResults ? (
+                     <>
+                       <input value={res.totalTime} onChange={(e) => setEditingResults(prev => {
+                         if (!prev) return prev;
+                         const copy = [...prev];
+                         copy[idx] = { ...copy[idx], totalTime: e.target.value };
+                         return copy;
+                       })} className="bg-zinc-900 p-2 rounded w-28" placeholder="Tiempo" />
+                       <input value={res.bestLap} onChange={(e) => setEditingResults(prev => {
+                         if (!prev) return prev;
+                         const copy = [...prev];
+                         copy[idx] = { ...copy[idx], bestLap: e.target.value };
+                         return copy;
+                       })} className="bg-zinc-900 p-2 rounded w-28" placeholder="Mejor vuelta" />
+                       <label className="flex items-center gap-1 whitespace-nowrap text-xs">
+                         <input type="checkbox" checked={!!res.isWinner} onChange={(e) => setEditingResults(prev => {
+                           if (!prev) return prev;
+                           const copy = prev.map((r, i) => ({ ...r, isWinner: i === idx ? e.target.checked : false }));
+                           return copy;
+                         })} className="w-3 h-3" />
+                         <span>🏆</span>
+                       </label>
+                       <label className="flex items-center gap-1 whitespace-nowrap text-xs">
+                         <input type="checkbox" checked={!!res.isNoShow} onChange={(e) => setEditingResults(prev => {
+                           if (!prev) return prev;
+                           const copy = [...prev];
+                           copy[idx] = { ...copy[idx], isNoShow: e.target.checked };
+                           return copy;
+                         })} className="w-3 h-3" />
+                         <span>❌ No-Show</span>
+                       </label>
+                       <button
+                         onClick={() => setEditingResults(prev => {
+                           if (!prev) return prev;
+                           return prev.filter((_, i) => i !== idx);
+                         })}
+                         className="p-1.5 bg-red-600 hover:bg-red-700 rounded-lg text-white transition-all"
+                         title="Eliminar"
+                       >
+                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                         </svg>
+                       </button>
+                     </>
+                   ) : (
+                     <>
+                       <div className="flex flex-col gap-1">
+                         <div className="flex items-center gap-3">
+                           <span className="text-red-500 font-mono text-sm">{res.totalTime}</span>
+                           <span className="text-zinc-400 font-mono text-xs">{res.bestLap}</span>
+                           {res.isWinner && <span className="text-yellow-400 font-black text-xs">🏆</span>}
+                           {res.isNoShow && <span className="text-red-400 font-black text-xs">❌ NO SHOW</span>}
+                         </div>
+                         {(res.laps || res.incidents || res.status) && (
+                           <div className="text-[10px] text-zinc-500 flex gap-2">
+                             {res.laps && <span>Vueltas: {res.laps}</span>}
+                             {res.incidents !== undefined && <span>• Inc: {res.incidents}</span>}
+                             {res.status && <span>• {res.status}</span>}
+                           </div>
+                         )}
+                         {res.bestSectors && (
+                           <div className="text-[9px] text-zinc-600 flex gap-2">
+                             {res.bestSectors.S1 && <span>S1: {res.bestSectors.S1}</span>}
+                             {res.bestSectors.S2 && <span>S2: {res.bestSectors.S2}</span>}
+                             {res.bestSectors.S3 && <span>S3: {res.bestSectors.S3}</span>}
+                           </div>
+                         )}
+                       </div>
+                     </>
+                   )}
+                 </div>
+               </div>
+             ))}
+             
+             {/* Mensaje si no hay resultados */}
+             {!isEditingResults && (!selectedHistoryRace.race_results || selectedHistoryRace.race_results.length === 0) && (
+               <div className="p-10 text-center bg-zinc-950/50 rounded-2xl border-2 border-dashed border-zinc-800">
+                 <svg className="w-12 h-12 mx-auto mb-4 text-zinc-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                 </svg>
+                 <p className="font-black uppercase tracking-[0.4em] text-[10px] text-zinc-700 italic">
+                   No hay resultados cargados para esta carrera
+                 </p>
+                 <p className="text-xs text-zinc-600 mt-2">
+                   Hacé click en "✏️ Editar" para agregar datos
+                 </p>
+               </div>
+             )}
+           </div>
+
+           {/* Datos Relevantes de la Carrera */}
+           {!isEditingResults && selectedHistoryRace.relevant_data && (
+             <div className="mt-8 space-y-4">
+               <h3 className="text-sm font-black uppercase tracking-wider text-zinc-400 border-b border-zinc-800 pb-2">
+                 📊 Análisis de Carrera
+               </h3>
+               {selectedHistoryRace.relevant_data.performance && (
+                 <div className="bg-zinc-800/50 p-4 rounded-xl">
+                   <div className="text-[10px] font-black uppercase tracking-wider text-red-500 mb-2">Rendimiento</div>
+                   <p className="text-sm text-zinc-300 leading-relaxed">{selectedHistoryRace.relevant_data.performance}</p>
+                 </div>
+               )}
+               {selectedHistoryRace.relevant_data.summary && (
+                 <div className="bg-zinc-800/50 p-4 rounded-xl">
+                   <div className="text-[10px] font-black uppercase tracking-wider text-red-500 mb-2">Resumen</div>
+                   <p className="text-sm text-zinc-300 leading-relaxed">{selectedHistoryRace.relevant_data.summary}</p>
+                 </div>
+               )}
+             </div>
+           )}
+        </div>
+      ) : (
+        <div className="p-20 text-center">Cargando datos...</div>
+      )}
+    </div>
+  </div>
+)}
     </div>
   );
 }
