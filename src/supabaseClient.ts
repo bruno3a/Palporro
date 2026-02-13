@@ -96,9 +96,30 @@ const getClient = (environment: string) => {
 };
 
 export function getEnvironment(): string {
-  return import.meta.env.VITE_ENVIRONMENT
-    || runtimeConfig?.VITE_ENVIRONMENT
-    || 'PROD';
+  const envFromBuild = (import.meta as any).env?.VITE_ENVIRONMENT;
+  const envFromRuntime = runtimeConfig?.VITE_ENVIRONMENT;
+  const raw = String(envFromBuild || envFromRuntime || 'PROD');
+
+  // Normalize composite or unexpected environment values.
+  // If the runtime/build string contains 'PROD' prefer PROD, otherwise
+  // prefer TEST when present, then DEV. This avoids cases like 'PROD+TEST'
+  // causing the UI to fetch both TEST and PROD rows.
+  let normalized = raw;
+  try {
+    const up = raw.toUpperCase();
+    if (up.includes('PROD')) normalized = 'PROD';
+    else if (up.includes('TEST')) normalized = 'TEST';
+    else if (up.includes('DEV')) normalized = 'DEV';
+    else normalized = raw;
+  } catch (e) {
+    normalized = raw;
+  }
+
+  try {
+    console.log('getEnvironment: build=', envFromBuild, 'runtime=', envFromRuntime, '-> raw=', raw, 'normalized=', normalized);
+  } catch (e) { /* ignore */ }
+
+  return normalized;
 }
 
 export interface TimeSlot {
