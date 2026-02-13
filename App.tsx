@@ -1921,20 +1921,6 @@ const arraysEqual = (a: string[], b: string[]) => {
             </div>
           </button>
 
-          {/* Mobile voting quick access (shows text 'Próxima Fecha' on small screens) */}
-          <button
-            onClick={() => setVotingState(prev => ({ ...prev, isOpen: !prev.isOpen }))}
-            className={`md:hidden fixed right-4 bottom-24 z-[70] px-4 py-3 rounded-2xl font-black text-sm tracking-widest flex items-center gap-3 border-2 ${
-              !votingState.hasVoted ? 'bg-red-600 text-white shadow-2xl animate-pulse border-red-600' : 'bg-zinc-800 text-zinc-100 border-zinc-700'
-            }`}
-          >
-            <span>VOTÁ</span>
-            <span className="text-[11px] opacity-80">• Próxima Fecha</span>
-            {!votingState.hasVoted && (
-              <span className="w-2 h-2 bg-white rounded-full animate-ping"></span>
-            )}
-          </button>
-
           {/* Panel de votación */}
           <div
             className={`fixed right-0 top-0 bottom-0 w-full md:w-[760px] bg-zinc-900 border-l-2 border-red-600/50 shadow-[0_0_60px_rgba(220,38,38,0.4)] z-50 transition-transform duration-500 overflow-y-auto ${
@@ -2432,39 +2418,41 @@ const arraysEqual = (a: string[], b: string[]) => {
                     const isNext = idx === nextTrackIndex;
                     const isTraining = idx === 0;
                     const hasVotes = votingState.allVotes.length > 0;
-                    
-                    // Si es la próxima pista pero no hay votos, mostrar "Pendiente de votación"
-                    if (isNext && !hasVotes) {
-                      return (
-                        <div key={`pending-${idx}`} className="w-full p-6 rounded-xl border-2 bg-gradient-to-br from-red-950/40 to-zinc-900/40 border-red-600/70 shadow-xl shadow-red-900/20 flex flex-col items-center justify-center relative overflow-hidden">
-                          <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>
-                          <div className="absolute inset-0 bg-gradient-to-r from-red-600/5 to-transparent pointer-events-none"></div>
-                          <div className="flex flex-col items-center gap-3 text-center relative z-10">
-                            <div className="relative">
-                              <svg className="w-12 h-12 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                              <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-600 rounded-full animate-ping"></div>
-                              <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-600 rounded-full"></div>
-                            </div>
-                            <span className="text-[15px] font-black uppercase italic tracking-tighter text-red-400">⚠️ Pendiente de votación</span>
-                            <span className="text-[11px] text-red-300/60 font-mono tracking-wide">Esperando primer voto para definir próxima pista</span>
-                          </div>
-                        </div>
-                      );
-                    }
+                    const isFirstIncomplete = !t.completed && tracks.slice(0, idx).every(prev => prev.completed);
                     
                     return (
-                      <button key={t.name} onClick={() => handleTrackClick(t.name)} className={`w-full p-4 rounded-xl border transition-all flex items-center justify-between relative overflow-hidden group ${t.completed ? 'bg-zinc-800/20 border-zinc-700 hover:border-red-600/40' : isNext ? 'bg-zinc-900 border-red-600/50 shadow-xl' : 'bg-zinc-950 border-zinc-800 hover:border-zinc-600'}`}>
-                        {isNext && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>}
-                        <div className="flex items-center gap-5">
-                            <span className={`text-[11px] font-mono font-black ${t.completed ? 'text-zinc-500' : isNext ? 'text-red-600' : 'text-zinc-700'}`}>{idx < 10 ? `0${idx}` : idx}</span>
-                            <span className={`text-[14px] font-black uppercase italic tracking-tighter ${t.completed ? 'text-zinc-400 group-hover:text-zinc-100' : isNext ? 'text-white' : 'text-zinc-300'}`}>{t.name}</span>
-                        </div>
-                        <div className={`w-8 h-8 rounded-lg border flex items-center justify-center ${t.completed ? 'bg-zinc-800 border-zinc-700' : isNext ? 'bg-red-600/10' : 'border-zinc-800'}`}>
-                          {t.completed ? <svg className="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M9 5l7 7-7 7" /></svg> : isNext ? <div className="w-2.5 h-2.5 bg-red-600 rounded-full animate-ping"></div> : null}
-                        </div>
-                      </button>
+                      <React.Fragment key={t.name}>
+                        {/* Mostrar "Pendiente de votación" justo antes de la primera pista no completada */}
+                        {isFirstIncomplete && !hasVotes && nextTrackIndex !== -1 && (
+                          <div className="w-full p-6 rounded-xl border-2 bg-gradient-to-br from-red-950/40 to-zinc-900/40 border-red-600/70 shadow-xl shadow-red-900/20 flex flex-col items-center justify-center relative overflow-hidden">
+                            <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>
+                            <div className="absolute inset-0 bg-gradient-to-r from-red-600/5 to-transparent pointer-events-none"></div>
+                            <div className="flex flex-col items-center gap-3 text-center relative z-10">
+                              <div className="relative">
+                                <svg className="w-12 h-12 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-600 rounded-full animate-ping"></div>
+                                <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-600 rounded-full"></div>
+                              </div>
+                              <span className="text-[15px] font-black uppercase italic tracking-tighter text-red-400">⚠️ Pendiente de votación</span>
+                              <span className="text-[11px] text-red-300/60 font-mono tracking-wide">Esperando primer voto para definir próxima pista</span>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Renderizar la pista */}
+                        <button onClick={() => handleTrackClick(t.name)} className={`w-full p-4 rounded-xl border transition-all flex items-center justify-between relative overflow-hidden group ${t.completed ? 'bg-zinc-800/20 border-zinc-700 hover:border-red-600/40' : isNext && hasVotes ? 'bg-zinc-900 border-red-600/50 shadow-xl' : 'bg-zinc-950 border-zinc-800 hover:border-zinc-600'}`}>
+                          {isNext && hasVotes && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>}
+                          <div className="flex items-center gap-5">
+                              <span className={`text-[11px] font-mono font-black ${t.completed ? 'text-zinc-500' : isNext && hasVotes ? 'text-red-600' : 'text-zinc-700'}`}>{idx < 10 ? `0${idx}` : idx}</span>
+                              <span className={`text-[14px] font-black uppercase italic tracking-tighter ${t.completed ? 'text-zinc-400 group-hover:text-zinc-100' : isNext && hasVotes ? 'text-white' : 'text-zinc-300'}`}>{t.name}</span>
+                          </div>
+                          <div className={`w-8 h-8 rounded-lg border flex items-center justify-center ${t.completed ? 'bg-zinc-800 border-zinc-700' : isNext && hasVotes ? 'bg-red-600/10' : 'border-zinc-800'}`}>
+                            {t.completed ? <svg className="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M9 5l7 7-7 7" /></svg> : isNext && hasVotes ? <div className="w-2.5 h-2.5 bg-red-600 rounded-full animate-ping"></div> : null}
+                          </div>
+                        </button>
+                      </React.Fragment>
                     );
                   })}
                 </div>
