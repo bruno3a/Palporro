@@ -472,3 +472,105 @@ export const getRaceByNumber = async (
 
   return data;
 };
+
+export const getRaceById = async (
+  id: string,
+  environment: 'PROD' | 'DEV' | 'TEST'
+): Promise<RaceHistory | null> => {
+  const client = getClient(environment);
+  if (!client) return null;
+
+  const { data, error } = await client
+    .from('race_history')
+    .select('*')
+    .eq('id', id)
+    .eq('environment', environment)
+    .single();
+
+  if (error) {
+    console.error('Error fetching race by id:', error);
+    return null;
+  }
+
+  return data;
+};
+
+// ============================================
+// STANDINGS FUNCTIONS
+// ============================================
+
+export interface StandingRecord {
+  id?: string;
+  pilot: string;
+  points: number;
+  races_run: number;
+  last_result: string;
+  incidences: number;
+  wins: number;
+  environment: string;
+  updated_at?: string;
+}
+
+export const getStandings = async (
+  environment: 'PROD' | 'DEV' | 'TEST'
+): Promise<StandingRecord[]> => {
+  const client = getClient(environment);
+  
+  if (!client) {
+    console.error('Supabase client not initialized');
+    return [];
+  }
+
+  const { data, error } = await client
+    .from('standings')
+    .select('*')
+    .eq('environment', environment)
+    .order('points', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching standings:', error);
+    return [];
+  }
+
+  return data || [];
+};
+
+export const upsertStandings = async (
+  standings: StandingRecord[],
+  environment: 'PROD' | 'DEV' | 'TEST'
+): Promise<boolean> => {
+  const client = getClient(environment);
+  
+  if (!client) {
+    console.error('Supabase client not initialized');
+    return false;
+  }
+
+  const records = standings.map(s => ({
+    pilot: s.pilot,
+    points: s.points,
+    races_run: s.races_run,
+    last_result: s.last_result,
+    incidences: s.incidences,
+    wins: s.wins || 0,
+    environment: environment,
+    updated_at: new Date().toISOString()
+  }));
+
+  console.log('📤 Upserting standings to Supabase:', records);
+
+  const { data, error } = await client
+    .from('standings')
+    .upsert(records, {
+      onConflict: 'pilot,environment'
+    })
+    .select();
+
+  if (error) {
+    console.error('❌ Error upserting standings:', error);
+    return false;
+  }
+
+  console.log('✅ Standings saved successfully to Supabase:', data);
+  return true;
+};

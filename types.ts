@@ -5,6 +5,7 @@ export interface Standing {
   lastResult: string;
   racesRun: number;
   incidences: number;
+  wins?: number;
 }
 
 export interface TrackStatus {

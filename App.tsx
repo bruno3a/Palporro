@@ -5,7 +5,7 @@ import { PILOTS, INITIAL_TRACKS, SCRIPT_SYSTEM_INSTRUCTION_DYNAMIC, VOICE_OPTION
 import { decode, encode, decodeAudioData, createWavBlob } from './audioUtils';
 import { TrackStatus, Standing } from './types';
 import { getVotes, addVote, subscribeToVotes, getVotingStats, getEnvironment, getVoteByIp, TimeSlot } from "./src/supabaseClient";
-import { saveRaceHistory, getRaceHistory, updateRaceResults, upsertRaceResults, RaceHistory, RaceResult } from "./src/supabaseClient";
+import { saveRaceHistory, getRaceHistory, updateRaceResults, upsertRaceResults, getStandings, upsertStandings, RaceHistory, RaceResult } from "./src/supabaseClient";
 
 interface VoteData {
   slots: TimeSlot[];
@@ -153,28 +153,6 @@ const arraysEqual = (a: string[], b: string[]) => {
   const sa = [...a].sort();
   const sb = [...b].sort();
   return sa.every((v, i) => v === sb[i]);
-};
-
-// Normalize track/pilot names for robust matching: remove diacritics, punctuation,
-// collapse spaces, strip common suffixes (gp, gran premio, grand prix) and lowercase.
-const normalizeName = (s?: string | null) => {
-  if (!s) return '';
-  try {
-    let t = s.toString().trim().toLowerCase();
-    // remove diacritics
-    t = t.normalize('NFD').replace(/\p{Diacritic}/gu, '');
-    // replace common connectors and punctuation with spaces
-    t = t.replace(/[_\-\.|,/\\()\[\]']/g, ' ');
-    // remove words like 'gp', 'gran premio', 'grand prix', 'g p'
-    t = t.replace(/\b(gp|g\.p\.|gran premio|grand prix)\b/g, '');
-    // remove non-alphanumeric (keep spaces)
-    t = t.replace(/[^a-z0-9\s]/g, '');
-    // collapse multiple spaces
-    t = t.replace(/\s+/g, ' ').trim();
-    return t;
-  } catch (e) {
-    return (s || '').toString().trim().toLowerCase();
-  }
 };
 
   const [votingState, setVotingState] = useState<VotingState>(() => {
@@ -511,39 +489,48 @@ const normalizeName = (s?: string | null) => {
 
   // When a track is clicked from portada, open its results modal and allow editing via radio code
   const handleTrackClick = async (trackName: string) => {
-    // Try to find cached race first (robust matching: exact, GP suffix, case-insensitive, includes)
-    const normalize = (s: string) => s?.toString().trim().toLowerCase() || '';
-    const nameNorm = normalize(trackName);
-
-    let found = raceHistory.find(r => {
-      const tn = normalize(r.track_name || '');
-      return tn === nameNorm || tn === `${nameNorm} gp` || tn.includes(nameNorm) || nameNorm.includes(tn);
-    });
-
-    // If not found, fetch latest history from PROD and TEST, merge and retry
+    // Try to find cached race first
+    let found = raceHistory.find(r => r.track_name === trackName || r.track_name === `${trackName} GP`);
+    // If not found, fetch latest DEV history and retry (useful after inserting dummy data)
     if (!found) {
       try {
-        const [prod, test] = await Promise.all([getRaceHistory('PROD'), getRaceHistory('TEST')]);
-        const combined = [...(test || []), ...(prod || [])];
-        setRaceHistory(prev => {
-          // merge by id or race_number
-          const map: Record<string, RaceHistory> = {};
-          [...combined, ...(prev || [])].forEach(r => { map[String(r.race_number) || r.id] = r; });
-          return Object.values(map).sort((a,b) => b.race_number - a.race_number);
-        });
-
-        found = combined.find(r => {
-          const tn = normalize(r.track_name || '');
-          return tn === nameNorm || tn === `${nameNorm} gp` || tn.includes(nameNorm) || nameNorm.includes(tn);
-        });
+        const latest = await getRaceHistory('DEV');
+        if (latest && latest.length) {
+          setRaceHistory(prev => {
+            // merge latest into prev, preferring latest entries
+            const map: Record<string, RaceHistory> = {};
+            [...(latest || []), ...(prev || [])].forEach(r => { map[String(r.race_number) || r.id] = r; });
+            return Object.values(map).sort((a,b) => b.race_number - a.race_number);
+          });
+          found = latest.find(r => r.track_name === trackName || r.track_name === `${trackName} GP`);
+        }
       } catch (err) {
-        console.error('Error fetching race history on demand:', err);
+        console.error('Error fetching DEV history on demand:', err);
       }
     }
 
     if (found) {
-      setSelectedHistoryRace(found);
-      setShowResultsModal(true);
+      try {
+        // Try to fetch the freshest version from Supabase by id to ensure relevant_data/session_info are present
+        const env = getEnvironment() as any;
+        if (found.id) {
+          const fresh = await (await import('./src/supabaseClient')).getRaceById(found.id, env);
+          if (fresh) {
+            setSelectedHistoryRace(fresh);
+            setShowResultsModal(true);
+          } else {
+            setSelectedHistoryRace(found);
+            setShowResultsModal(true);
+          }
+        } else {
+          setSelectedHistoryRace(found);
+          setShowResultsModal(true);
+        }
+      } catch (err) {
+        console.error('Error fetching full race by id:', err);
+        setSelectedHistoryRace(found);
+        setShowResultsModal(true);
+      }
     } else if (isRadioUnlocked) {
       // Usuario tiene el código: abrir modal vacío para permitir crear/editar resultados manualmente
       const empty: RaceHistory = {
@@ -596,24 +583,10 @@ const normalizeName = (s?: string | null) => {
         } : undefined
       }));
 
-      // Normalize session info and relevant data keys to the shape used by the app
-      const rawSession = data.sesion_info || data.session_info || null;
-      const sessionInfo = rawSession ? {
-        pista: rawSession.pista || rawSession.track || null,
-        formato: rawSession.formato || rawSession.format || null,
-        vehicle: rawSession.vehiculo_unico || rawSession.vehicle || null
-      } : null;
-
-      const rawRelevant = data.datos_relevantes || data.relevant_data || null;
-      const relevantData = rawRelevant ? {
-        performance: rawRelevant.rendimiento || rawRelevant.performance || rawRelevant.performance_text || null,
-        summary: rawRelevant.resumen_jornada || rawRelevant.summary || rawRelevant.summary_text || null
-      } : null;
-
       return {
         results,
-        sessionInfo,
-        relevantData
+        sessionInfo: data.sesion_info || null,
+        relevantData: data.datos_relevantes || null
       };
     } catch (err) {
       console.error('Error parsing JSON:', err);
@@ -635,85 +608,130 @@ const normalizeName = (s?: string | null) => {
   };
 
   // Función para actualizar standings después de guardar resultados
-  const updateStandingsFromRace = (results: RaceResult[]) => {
+  const updateStandingsFromRace = async (results: RaceResult[]) => {
     if (!results || results.length === 0) return;
-    // Helper: normalizar nombre de piloto para comparar
-    const normalize = (n?: string) => (n || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
 
-    // Helper: parsear un tiempo de vuelta en formato "m:ss.xxx" o "ss.xxx" a segundos numéricos
-    const parseLapSeconds = (t?: string) => {
-      if (!t) return NaN;
-      const s = t.trim();
-      // Si contiene ':' interpretar como mm:ss(.ms)
-      if (s.includes(':')) {
-        const parts = s.split(':').map(p => p.trim());
-        // soportar mm:ss.xxx o h:mm:ss pero normalmente mm:ss.xxx
-        let seconds = 0;
-        while (parts.length > 0) {
-          const part = parts.pop();
-          if (!part) continue;
-          seconds = seconds / 60 + parseFloat(part);
+    console.log('=== ACTUALIZANDO STANDINGS ===');
+    console.log('Resultados recibidos:', results);
+
+    // Helper: parse lap time strings into milliseconds for reliable comparison
+    const parseLapTime = (t?: string): number | null => {
+      if (!t) return null;
+      // Common formats: "1:23.456", "83.456" or "1:23" or "01:23.456"
+      try {
+        const trimmed = String(t).trim();
+        if (trimmed.includes(':')) {
+          const parts = trimmed.split(':').map(p => p.trim());
+          const minutes = parseInt(parts[0] || '0', 10) || 0;
+          const secs = parseFloat(parts[1] || '0') || 0;
+          return Math.round((minutes * 60 + secs) * 1000);
         }
-        // Si la conversión es extraña, fallback
-        if (isNaN(seconds)) return NaN;
-        return seconds;
+        const secs = parseFloat(trimmed);
+        if (isNaN(secs)) return null;
+        return Math.round(secs * 1000);
+      } catch (e) {
+        return null;
       }
-
-      // Si no tiene ':', intentar parseFloat directo
-      const v = parseFloat(s.replace(',', '.'));
-      return isNaN(v) ? NaN : v;
     };
 
-    // Calcular mejor vuelta (menor tiempo en segundos)
-    const lapSeconds = results
+    // Encontrar la mejor vuelta (menor tiempo en ms) y su piloto
+    const bestLapEntry = results
       .filter(r => r.bestLap && !r.isNoShow)
-      .map(r => ({ r, s: parseLapSeconds(r.bestLap) }))
-      .filter(x => !isNaN(x.s))
-      .sort((a, b) => a.s - b.s);
-    const bestLapSeconds = lapSeconds.length > 0 ? lapSeconds[0].s : NaN;
+      .map(r => ({ pilot: r.pilot, raw: r.bestLap, ms: parseLapTime(r.bestLap) }))
+      .filter(x => x.ms !== null)
+      .sort((a, b) => (a.ms as number) - (b.ms as number))[0];
 
-    setStandings(prev => {
-      const updated = [...prev];
+    const bestLapTime = bestLapEntry ? bestLapEntry.raw : null;
+    const bestLapPilot = bestLapEntry ? bestLapEntry.pilot : null;
+    console.log('Mejor vuelta de la carrera:', bestLapTime);
 
-      const totalPositions = results.filter(r => !r.isNoShow).length;
+    // Actualizar estado local
+    const updatedStandings = await new Promise<Standing[]>((resolve) => {
+      setStandings(prev => {
+        const updated = [...prev];
 
-      results.forEach(result => {
-        if (result.isNoShow) return; // No dar puntos a pilotos que no se presentaron
+        results.forEach(result => {
+          // Find or add pilot
+          let pilotIndex = updated.findIndex(s => s.pilot === result.pilot);
+          if (pilotIndex === -1) {
+            console.log(`⚠️ Piloto ${result.pilot} no encontrado en standings — lo agrego automáticamente`);
+            updated.push({ pilot: result.pilot, points: 0, racesRun: 0, lastResult: 'N/A', incidences: 0, wins: 0 });
+            pilotIndex = updated.length - 1;
+          }
 
-        const target = normalize(result.pilot);
-        let pilotIndex = updated.findIndex(s => normalize(s.pilot) === target);
+          // Calcular puntos para no-shows
+          if (result.isNoShow) {
+            console.log(`❌ ${result.pilot} - NO SHOW: -1 punto`);
+            updated[pilotIndex] = {
+              ...updated[pilotIndex],
+              points: Math.max(0, (updated[pilotIndex].points || 0) - 1),
+              racesRun: (updated[pilotIndex].racesRun || 0) + 1,
+              lastResult: 'DNS',
+              incidences: (updated[pilotIndex].incidences || 0) + (result.incidents || 0),
+            };
+            return;
+          }
 
-        // Intentar coincidencias parciales si no se encuentra exacta (por variantes de nombre)
-        if (pilotIndex === -1) {
-          pilotIndex = updated.findIndex(s => normalize(s.pilot).startsWith(target) || target.startsWith(normalize(s.pilot)));
-        }
+          // Calcular puntos según posición (último: 1pt, incrementa hacia el podio)
+          const totalPositions = results.filter(r => !r.isNoShow).length;
+          const positionPoints = Math.max(1, totalPositions - (result.position || 0) + 1);
 
-        const pos = Number(result.position) || 0;
-        const positionPoints = Math.max(0, totalPositions - pos + 1);
-        const fastestLapPoint = (!isNaN(bestLapSeconds) && Math.abs(parseLapSeconds(result.bestLap) - bestLapSeconds) < 0.001) ? 1 : 0;
-        const racePoints = positionPoints + fastestLapPoint;
+          // Punto adicional por mejor vuelta (comparar por piloto para evitar diferencias de formato)
+          const fastestLapPoint = bestLapPilot && result.pilot === bestLapPilot ? 1 : 0;
 
-        if (pilotIndex === -1) {
-          // Si no existe el piloto en standings, lo agregamos para no perder puntos
-          console.warn('Pilot not found in standings, adding:', result.pilot);
-          updated.push({ pilot: result.pilot || 'Unknown', points: racePoints, lastResult: `P${pos}`, racesRun: 1, incidences: result.incidents || 0 });
-          return;
-        }
+          // Total de puntos de esta carrera
+          const racePoints = positionPoints + fastestLapPoint;
 
-        updated[pilotIndex] = {
-          ...updated[pilotIndex],
-          points: (updated[pilotIndex].points || 0) + racePoints,
-          racesRun: (updated[pilotIndex].racesRun || 0) + 1,
-          lastResult: `P${pos}`,
-          incidences: (updated[pilotIndex].incidences || 0) + (result.incidents || 0),
-        };
+          console.log(`✅ ${result.pilot} (P${result.position}):`, {
+            totalPositions,
+            positionPoints,
+            fastestLapPoint: fastestLapPoint ? '🏁 +1' : '',
+            totalRacePoints: racePoints
+          });
+
+          // Actualizar piloto (incluyendo lastResult para todas las posiciones)
+          updated[pilotIndex] = {
+            ...updated[pilotIndex],
+            points: (updated[pilotIndex].points || 0) + racePoints,
+            racesRun: (updated[pilotIndex].racesRun || 0) + 1,
+            lastResult: `P${result.position}`,
+            incidences: (updated[pilotIndex].incidences || 0) + (result.incidents || 0),
+            wins: (updated[pilotIndex].wins || 0) + (result.position === 1 ? 1 : 0)
+          };
+        });
+
+        // Ordenar por puntos
+        const sorted = updated.sort((a, b) => b.points - a.points);
+        console.log('Standings actualizados:', sorted.map(s => ({ pilot: s.pilot, points: s.points })));
+        resolve(sorted);
+        return sorted;
       });
-
-      // Ordenar por puntos
-      return updated.sort((a, b) => b.points - a.points);
     });
 
-    console.log('Standings updated with race results');
+    // Guardar en Supabase
+    try {
+      const env = getEnvironment() as any;
+      const standingsToSave = updatedStandings.map(s => ({
+        pilot: s.pilot,
+        points: s.points,
+        races_run: s.racesRun,
+        last_result: s.lastResult,
+        incidences: s.incidences,
+        wins: s.wins || 0,
+        environment: env
+      }));
+      
+      console.log('📤 Guardando en Supabase:', standingsToSave);
+      
+      const saved = await upsertStandings(standingsToSave, env);
+      if (saved) {
+        console.log('✅ Standings guardados en Supabase');
+      } else {
+        console.error('❌ Error guardando standings en Supabase');
+      }
+    } catch (err) {
+      console.error('Error saving standings:', err);
+    }
   };
 
   // Agregar estas funciones antes del return del componente
@@ -1009,8 +1027,8 @@ const normalizeName = (s?: string | null) => {
     });
 
     const raceNumber = completedCount + 1;
-    const environment = getEnvironment() as 'PROD' | 'TEST';
-
+    const environment = getEnvironment();
+    
     const success = await saveRaceHistory(
       raceNumber,
       trackName,
@@ -1210,22 +1228,22 @@ const normalizeName = (s?: string | null) => {
     return () => { mounted = false; clearInterval(id); };
   }, []);
 
-  // Cargar historial de carreras al montar - intentar ambos environments (PROD y TEST)
+  // Cargar historial de carreras al montar - intentar ambos environments (PROD y DEV)
   useEffect(() => {
     const loadHistory = async () => {
       try {
         const prod = await getRaceHistory('PROD');
-        const test = await getRaceHistory('TEST');
-        const combined = [...(prod || []), ...(test || [])];
-        // deduplicate by race_number or id, prefer TEST over PROD if duplicate
+        const dev = await getRaceHistory('DEV');
+        const combined = [...(prod || []), ...(dev || [])];
+        // deduplicate by race_number or id, prefer DEV over PROD if duplicate
         const map: Record<string, RaceHistory> = {};
         combined.forEach(r => {
           const key = String(r.race_number) || r.id;
-          // prefer TEST entries (they come later in the array)
+          // prefer DEV entries (they come later in the array)
           map[key] = r;
         });
         const merged = Object.values(map).sort((a,b) => b.race_number - a.race_number);
-        console.log('Historial de carreras cargado (PROD+TEST):', merged);
+        console.log('Historial de carreras cargado (PROD+DEV):', merged);
         setRaceHistory(merged);
       } catch (err) {
         console.error('Error cargando historial de carreras:', err);
@@ -1233,6 +1251,35 @@ const normalizeName = (s?: string | null) => {
     };
 
     loadHistory();
+  }, []);
+
+  // Cargar standings desde Supabase al montar
+  useEffect(() => {
+    const loadStandings = async () => {
+      try {
+        const env = getEnvironment() as any;
+        const savedStandings = await getStandings(env);
+        
+        if (savedStandings && savedStandings.length > 0) {
+          // Convertir de StandingRecord a Standing
+          const standings = savedStandings.map(s => ({
+            pilot: s.pilot,
+            points: s.points,
+            racesRun: s.races_run,
+            lastResult: s.last_result,
+            incidences: s.incidences
+          }));
+          setStandings(standings);
+          console.log('Standings loaded from Supabase:', standings);
+        } else {
+          console.log('No standings found in Supabase, using initial state');
+        }
+      } catch (err) {
+        console.error('Error loading standings:', err);
+      }
+    };
+
+    loadStandings();
   }, []);
 
   // Agregar función para detectar si hubo cambios
@@ -2421,19 +2468,12 @@ const normalizeName = (s?: string | null) => {
               <div>
                 <h2 className="text-3xl font-black uppercase italic">{selectedHistoryRace.track_name}</h2>
                 <div className="text-[11px] text-zinc-400 mt-1">{selectedHistoryRace.scheduled_day} • {selectedHistoryRace.scheduled_time}</div>
-                {selectedHistoryRace.session_info && (() => {
-                  const si: any = selectedHistoryRace.session_info as any;
-                  const formato = si?.formato ?? si?.format ?? null;
-                  const vehicle = si?.vehicle ?? si?.vehiculo_unico ?? null;
-                  return (
-                    <div className="text-[10px] text-zinc-500 mt-2">
-                      {formato && (
-                        <span>{formato}</span>
-                      )}
-                      {vehicle && <span className="ml-3">• {vehicle}</span>}
-                    </div>
-                  );
-                })()}
+                {selectedHistoryRace.session_info && (
+                  <div className="text-[10px] text-zinc-500 mt-2">
+                    {selectedHistoryRace.session_info.formato && <span>{selectedHistoryRace.session_info.formato}</span>}
+                    {selectedHistoryRace.session_info.vehicle && <span className="ml-3">• {selectedHistoryRace.session_info.vehicle}</span>}
+                  </div>
+                )}
               </div>
               <div className="flex gap-2 items-center">
                 {!isEditingResults && (
@@ -2491,7 +2531,7 @@ const normalizeName = (s?: string | null) => {
 
                           if (result.success && result.race) {
                             // Actualizar standings con los resultados de la carrera
-                            updateStandingsFromRace(finalResults);
+                            await updateStandingsFromRace(finalResults);
 
                             // Actualizar el estado local con los datos de Supabase
                             setRaceHistory(prev => {
@@ -2503,17 +2543,31 @@ const normalizeName = (s?: string | null) => {
                               }
                             });
                             
+                            // Actualizar selectedHistoryRace con los datos completos de Supabase
                             setSelectedHistoryRace(result.race);
                             setIsEditingResults(false);
                             setEditingResults(null);
                             setSessionInfo(null);
                             setRelevantData(null);
+                            
+                            console.log('✅ Carrera guardada con datos:', {
+                              session_info: result.race.session_info,
+                              relevant_data: result.race.relevant_data,
+                              results_count: result.race.race_results?.length
+                            });
+                            
                             alert('Resultados guardados correctamente en Supabase. Standings actualizados.');
                             
-                            // Recargar el historial
+                            // Recargar el historial para asegurar sincronización
                             const updated = await getRaceHistory(env);
                             if (updated) {
                               setRaceHistory(updated);
+                              // Actualizar selectedHistoryRace con la versión más reciente
+                              const freshRace = updated.find(r => r.id === result.race!.id);
+                              if (freshRace) {
+                                setSelectedHistoryRace(freshRace);
+                                console.log('✅ selectedHistoryRace actualizado:', freshRace);
+                              }
                             }
                           } else {
                             throw new Error('No se pudo guardar la carrera');
@@ -2555,7 +2609,6 @@ const normalizeName = (s?: string | null) => {
                   >
                     {showJsonImport ? 'Cerrar' : 'Importar JSON'}
                   </button>
-
                   <button
                     onClick={() => {
                       setEditingResults(prev => [
@@ -2574,11 +2627,9 @@ const normalizeName = (s?: string | null) => {
                     + Agregar Piloto
                   </button>
                 </div>
-              </>
-            )}
 
-            {/* Panel de importación de JSON */}
-            {showJsonImport && isEditingResults && (
+                {/* Panel de importación de JSON */}
+                {showJsonImport && (
               <div className="mb-6 p-6 bg-zinc-950 border-2 border-blue-600/50 rounded-2xl">
                 <h3 className="text-lg font-black uppercase text-blue-400 mb-4">Importar Resultados desde JSON</h3>
                 <p className="text-xs text-zinc-400 mb-4">
@@ -2608,6 +2659,8 @@ const normalizeName = (s?: string | null) => {
                   </button>
                 </div>
               </div>
+            )}
+              </>
             )}
 
            {/* Render de los resultados (editable si isEditingResults) */}
@@ -2753,6 +2806,12 @@ const normalizeName = (s?: string | null) => {
                    <p className="text-sm text-zinc-300 leading-relaxed">{selectedHistoryRace.relevant_data.summary}</p>
                  </div>
                )}
+             </div>
+           )}
+           {/* Debug para ver si hay relevant_data */}
+           {!isEditingResults && !selectedHistoryRace.relevant_data && selectedHistoryRace.race_results && selectedHistoryRace.race_results.length > 0 && (
+             <div className="mt-4 p-3 bg-zinc-900/50 rounded text-xs text-zinc-600">
+               ℹ️ Esta carrera no tiene datos de análisis guardados
              </div>
            )}
         </div>
