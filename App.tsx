@@ -263,20 +263,6 @@ const arraysEqual = (a: string[], b: string[]) => {
     }
   }, []);
 
-  // Load race history on mount
-  useEffect(() => {
-    (async () => {
-      try {
-        const env = getEnvironment();
-        const history = await getRaceHistory(env as any);
-        setRaceHistory(history || []);
-        console.log('Initial raceHistory load:', (history || []).length, 'env:', env);
-      } catch (err) {
-        console.error('Error loading race history on mount:', err);
-      }
-    })();
-  }, []);
-
   const audioContextRef = useRef<AudioContext | null>(null);
 
   const completedCount = useMemo(() => tracks.filter(t => t.completed).length, [tracks]);
@@ -538,10 +524,11 @@ const arraysEqual = (a: string[], b: string[]) => {
       const lower = trackName.toLowerCase();
       found = raceHistory.find(r => (r.track_name || '').toLowerCase().includes(lower) || (r.track_name || '').toLowerCase() === `${lower} gp`);
     }
-    // If not found, fetch latest DEV history and retry (useful after inserting dummy data)
+    // If not found, fetch latest history from current environment and retry
     if (!found) {
       try {
-        const latest = await getRaceHistory('TEST');
+        const currentEnv = getEnvironment();
+        const latest = await getRaceHistory(currentEnv as any);
         if (latest && latest.length) {
           setRaceHistory(prev => {
             // merge latest into prev, preferring latest entries
@@ -552,15 +539,15 @@ const arraysEqual = (a: string[], b: string[]) => {
           found = latest.find(r => r.track_name === trackName || r.track_name === `${trackName} GP`);
         }
       } catch (err) {
-        console.error('Error fetching DEV history on demand:', err);
+        console.error('Error fetching history on demand:', err);
       }
     }
 
     if (found) {
       try {
         // Try to fetch the freshest version from Supabase by id to ensure relevant_data/session_info are present
-        // Use the environment attached to the found record if available; fallback to the app environment or TEST for local dev.
-        const env = (found as any).environment || getEnvironment() || 'TEST';
+        // Use the environment attached to the found record if available; fallback to the app environment.
+        const env = (found as any).environment || getEnvironment();
         if (found.id) {
           const fresh = await (await import('./src/supabaseClient')).getRaceById(found.id, env as any);
           console.log('Fetched fresh race by id:', found.id, 'env:', env, 'hasRelevantData:', !!fresh?.relevant_data);
@@ -1378,6 +1365,7 @@ const arraysEqual = (a: string[], b: string[]) => {
     const loadHistory = async () => {
       try {
         const env = getEnvironment();
+        console.log('🏁 Cargando historial de carreras - Environment detectado:', env);
 
         // In production we MUST only surface PROD rows. In dev/local we
         // prefer TEST data (and optionally include DEV). This prevents
@@ -1385,49 +1373,24 @@ const arraysEqual = (a: string[], b: string[]) => {
         let fetched: RaceHistory[] = [];
 
         if (env === 'PROD') {
+          console.log('🏁 Modo PRODUCCIÓN - cargando solo datos PROD');
           const prod = await getRaceHistory('PROD');
           fetched = prod || [];
+          console.log('🏁 Datos PROD cargados:', fetched.length, 'carreras');
         } else {
-          // development: prefer TEST but include PROD if useful
+          console.log('🏁 Modo DESARROLLO - cargando datos TEST');
+          // development: only load TEST data
           const test = await getRaceHistory('TEST');
-          const prod = await getRaceHistory('PROD');
-          fetched = [...(test || []), ...(prod || [])];
+          fetched = test || [];
+          console.log('🏁 Datos TEST cargados:', fetched.length, 'carreras');
         }
 
-        // Deduplicate by race_number (or id) and ensure PROD rows win when
-        // duplicates exist. This guarantees production data is authoritative
-        // whenever both TEST and PROD rows are present for the same race.
-        const map: Record<string, RaceHistory> = {};
-        fetched.forEach(r => {
-          const key = String(r.race_number) || r.id || '';
-          if (!key) return;
-
-          const existing = map[key];
-          if (!existing) {
-            map[key] = r as RaceHistory & { environment?: string };
-            return;
-          }
-
-          // If either row explicitly carries an environment field, prefer
-          // the PROD one. If none is PROD, keep the existing entry (first).
-          const exEnv = (existing as any).environment;
-          const newEnv = (r as any).environment;
-          if (exEnv === 'PROD') {
-            // keep existing
-            return;
-          }
-          if (newEnv === 'PROD') {
-            map[key] = r as RaceHistory & { environment?: string };
-            return;
-          }
-          // otherwise keep the existing (stable ordering)
-        });
-
-        const merged = Object.values(map).sort((a,b) => (b.race_number || 0) - (a.race_number || 0));
-        console.log('Historial de carreras cargado (env:', env, '):', merged.length);
-        setRaceHistory(merged);
+        // Sort by race_number descending (most recent first)
+        const sorted = fetched.sort((a,b) => (b.race_number || 0) - (a.race_number || 0));
+        console.log('🏁 Historial final:', sorted.length, 'carreras para environment:', env);
+        setRaceHistory(sorted);
       } catch (err) {
-        console.error('Error cargando historial de carreras:', err);
+        console.error('❌ Error cargando historial de carreras:', err);
       }
     };
 
