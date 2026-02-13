@@ -548,23 +548,40 @@ const arraysEqual = (a: string[], b: string[]) => {
         // Try to fetch the freshest version from Supabase by id to ensure relevant_data/session_info are present
         // Use the environment attached to the found record if available; fallback to the app environment.
         const env = (found as any).environment || getEnvironment();
+        console.log('📋 Abriendo modal para:', found.track_name, {
+          id: found.id,
+          env,
+          hasRelevantData: !!found.relevant_data,
+          hasSessionInfo: !!found.session_info,
+          hasResults: !!(found.race_results && found.race_results.length > 0)
+        });
+        
         if (found.id) {
           const fresh = await (await import('./src/supabaseClient')).getRaceById(found.id, env as any);
-          console.log('Fetched fresh race by id:', found.id, 'env:', env, 'hasRelevantData:', !!fresh?.relevant_data);
+          console.log('📋 Datos frescos de Supabase:', {
+            found: !!fresh,
+            hasRelevantData: !!fresh?.relevant_data,
+            hasSessionInfo: !!fresh?.session_info,
+            relevantData: fresh?.relevant_data,
+            sessionInfo: fresh?.session_info
+          });
+          
           if (fresh) {
             setSelectedHistoryRace(fresh);
             setShowResultsModal(true);
           } else {
             // If fetch by id failed, still show the cached entry
+            console.warn('⚠️ No se pudieron cargar datos frescos, usando caché');
             setSelectedHistoryRace(found);
             setShowResultsModal(true);
           }
         } else {
+          console.warn('⚠️ Carrera sin ID, usando datos del caché');
           setSelectedHistoryRace(found);
           setShowResultsModal(true);
         }
       } catch (err) {
-        console.error('Error fetching full race by id:', err);
+        console.error('❌ Error fetching full race by id:', err);
         setSelectedHistoryRace(found);
         setShowResultsModal(true);
       }
@@ -2781,6 +2798,36 @@ const arraysEqual = (a: string[], b: string[]) => {
                 )}
               </div>
               <div className="flex gap-2 items-center">
+                {!isEditingResults && selectedHistoryRace.id && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const env = (selectedHistoryRace as any).environment || getEnvironment();
+                        console.log('🔄 Refrescando datos de carrera desde Supabase...');
+                        const fresh = await (await import('./src/supabaseClient')).getRaceById(selectedHistoryRace.id, env as any);
+                        if (fresh) {
+                          console.log('✅ Datos refrescados:', {
+                            hasRelevantData: !!fresh.relevant_data,
+                            hasSessionInfo: !!fresh.session_info,
+                            relevantData: fresh.relevant_data
+                          });
+                          setSelectedHistoryRace(fresh);
+                          // También actualizar en raceHistory
+                          setRaceHistory(prev => prev.map(r => r.id === fresh.id ? fresh : r));
+                        } else {
+                          alert('No se pudieron recargar los datos');
+                        }
+                      } catch (err) {
+                        console.error('Error refrescando datos:', err);
+                        alert('Error al recargar los datos');
+                      }
+                    }}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-black py-2 px-3 rounded-xl text-sm transition-all"
+                    title="Refrescar datos desde Supabase"
+                  >
+                    🔄
+                  </button>
+                )}
                 {!isEditingResults && (
                   <button
                     onClick={() => {
@@ -3144,21 +3191,36 @@ const arraysEqual = (a: string[], b: string[]) => {
                {selectedHistoryRace.relevant_data.performance && (
                  <div className="bg-zinc-800/50 p-4 rounded-xl">
                    <div className="text-[10px] font-black uppercase tracking-wider text-red-500 mb-2">Rendimiento</div>
-                   <p className="text-sm text-zinc-300 leading-relaxed">{selectedHistoryRace.relevant_data.performance}</p>
+                   <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">{selectedHistoryRace.relevant_data.performance}</p>
                  </div>
                )}
                {selectedHistoryRace.relevant_data.summary && (
                  <div className="bg-zinc-800/50 p-4 rounded-xl">
                    <div className="text-[10px] font-black uppercase tracking-wider text-red-500 mb-2">Resumen</div>
-                   <p className="text-sm text-zinc-300 leading-relaxed">{selectedHistoryRace.relevant_data.summary}</p>
+                   <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">{selectedHistoryRace.relevant_data.summary}</p>
                  </div>
                )}
+               {/* Mostrar cualquier otro campo que venga en relevant_data */}
+               {Object.entries(selectedHistoryRace.relevant_data).map(([key, value]) => {
+                 if (key === 'performance' || key === 'summary' || !value) return null;
+                 return (
+                   <div key={key} className="bg-zinc-800/50 p-4 rounded-xl">
+                     <div className="text-[10px] font-black uppercase tracking-wider text-red-500 mb-2">
+                       {key.replace(/_/g, ' ')}
+                     </div>
+                     <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">
+                       {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                     </p>
+                   </div>
+                 );
+               })}
              </div>
            )}
            {/* Debug para ver si hay relevant_data */}
            {!isEditingResults && !selectedHistoryRace.relevant_data && selectedHistoryRace.race_results && selectedHistoryRace.race_results.length > 0 && (
              <div className="mt-4 p-3 bg-zinc-900/50 rounded text-xs text-zinc-600">
                ℹ️ Esta carrera no tiene datos de análisis guardados
+               {console.log('🔍 Debug - selectedHistoryRace completo:', selectedHistoryRace)}
              </div>
            )}
         </div>
