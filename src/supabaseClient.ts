@@ -883,3 +883,74 @@ export const upsertStandings = async (
   console.log('✅ Standings saved successfully to Supabase:', data);
   return true;
 };
+
+export async function incrementVisits(environment: 'PROD' | 'TEST' = 'PROD') {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      console.warn('Supabase client not available');
+      return false;
+    }
+
+    // Usar RPC (Remote Procedure Call) para incrementar atómicamente
+    // Esta función debe existir en Supabase como:
+    /*
+      CREATE OR REPLACE FUNCTION increment_visit_counter(env text)
+      RETURNS void
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        INSERT INTO visit_counter (environment, count, last_updated)
+        VALUES (env, 1, NOW())
+        ON CONFLICT (environment)
+        DO UPDATE SET 
+          count = visit_counter.count + 1,
+          last_updated = NOW();
+      END;
+      $$;
+    */
+    
+    const { error } = await supabase.rpc('increment_visit_counter', { 
+      env: environment 
+    });
+
+    if (error) {
+      console.error('Error incrementing visit counter:', error);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error('Exception incrementing visits:', err);
+    return false;
+  }
+}
+
+/**
+ * Obtiene el contador actual de visitas
+ */
+export async function getVisitCount(environment: 'PROD' | 'TEST' = 'PROD'): Promise<number> {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      console.warn('Supabase client not available');
+      return 0;
+    }
+
+    const { data, error } = await supabase
+      .from('visit_counter')
+      .select('count')
+      .eq('environment', environment)
+      .single();
+
+    if (error) {
+      console.error('Error getting visit count:', error);
+      return 0;
+    }
+
+    return data?.count || 0;
+  } catch (err) {
+    console.error('Exception getting visit count:', err);
+    return 0;
+  }
+}

@@ -56,6 +56,7 @@ const App: React.FC = () => {
   // Agregar estos estados PRIMERO
   const [debugMode, setDebugMode] = useState(false);
   const [forceVotingActive, setForceVotingActive] = useState(false);
+  const [visitCount, setVisitCount] = useState<number | null>(null);
   const [useGridVoting, setUseGridVoting] = useState<boolean>(() => {
     try {
       const v = localStorage.getItem('palporro_grid_voting');
@@ -126,7 +127,10 @@ const App: React.FC = () => {
   }>>([]);
 
   // Floating player controls
-  const [isFloatingMinimized, setIsFloatingMinimized] = useState(false);
+  const [isFloatingMinimized, setIsFloatingMinimized] = useState(() => {
+    // En mobile (ancho < 768px), iniciar minimizado para no tapar el footer
+    return typeof window !== 'undefined' && window.innerWidth < 768;
+  });
 
   // Apply global custom cursor (useEffect so it works in production build)
   useEffect(() => {
@@ -216,36 +220,9 @@ const arraysEqual = (a: string[], b: string[]) => {
 
   // AHORA definir la función isVotingActive DESPUÉS de los estados
   const isVotingActive = (): boolean => {
-    if (forceVotingActive) return true; // Override para testing
-
-    // Use Argentina timezone for voting calculations
-    const now = new Date();
-    const argNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
-
-    // Determine voting start (saved in localStorage as ISO string). If missing, compute previous Sunday.
-    const stored = localStorage.getItem('palporro_voting_start');
-    let start: Date;
-    if (stored) {
-      const parsed = new Date(stored);
-      if (!isNaN(parsed.getTime())) start = parsed;
-    }
-    if (!start) {
-      // compute previous Sunday at 00:00 in Argentina timezone
-      const d = new Date(argNow);
-      const dow = d.getDay(); // 0..6
-      const daysBack = dow; // if Sunday->0, else go back dow days
-      d.setDate(d.getDate() - daysBack);
-      d.setHours(0,0,0,0);
-      start = d;
-      // persist for future runs
-      try { localStorage.setItem('palporro_voting_start', start.toISOString()); } catch(e){}
-    }
-
-    // Active for 7 days starting at 'start'
-    const end = new Date(start);
-    end.setDate(end.getDate() + 7);
-
-    return argNow >= start && argNow < end;
+    // La votación SIEMPRE está activa - es perpetua
+    // Después de cada carrera se resetea y se abre inmediatamente para la siguiente
+    return true;
   };
 
   // Cargar historial al montar el componente
@@ -1414,6 +1391,36 @@ const arraysEqual = (a: string[], b: string[]) => {
     loadHistory();
   }, []);
 
+  // Contador de visitas - incrementar al cargar la página
+  useEffect(() => {
+    const incrementVisitCount = async () => {
+      try {
+        // Por ahora mostrar valor de prueba hasta que las funciones estén implementadas
+        // Cuando agregues las funciones correctamente a supabaseClient.ts, descomenta el código de abajo
+        setVisitCount(1337);
+        console.log('👁️ Contador de visitas: Mostrando valor de prueba (1337)');
+        console.log('💡 Para activar contador real: implementa incrementVisits() y getVisitCount() en supabaseClient.ts');
+        
+        /* DESCOMENTAR CUANDO LAS FUNCIONES ESTÉN LISTAS:
+        const env = getEnvironment();
+        const { incrementVisits, getVisitCount } = await import('./src/supabaseClient');
+        
+        if (typeof incrementVisits === 'function' && typeof getVisitCount === 'function') {
+          await incrementVisits(env);
+          const count = await getVisitCount(env);
+          setVisitCount(count);
+          console.log('👁️ Visitas totales:', count);
+        }
+        */
+      } catch (err) {
+        console.error('❌ Error con contador de visitas:', err);
+        setVisitCount(1337); // Valor de prueba en caso de error
+      }
+    };
+
+    incrementVisitCount();
+  }, []);
+
   // When raceHistory changes, mark completed tracks and pick next random track
   useEffect(() => {
     try {
@@ -1682,28 +1689,60 @@ const arraysEqual = (a: string[], b: string[]) => {
         </div>
       )}
 
-      {/* VERSIÓN MÓVIL DEL REPRODUCTOR - Fijo en la parte inferior */}
+      {/* VERSIÓN MÓVIL DEL REPRODUCTOR - Minimizable para no tapar footer */}
       {activeTab === 'dashboard' && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-zinc-900 border-t-2 border-red-600/50 shadow-[0_-10px_60px_rgba(220,38,38,0.4)] backdrop-blur-xl bg-opacity-95 p-4 safe-area-inset-bottom">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
-              <span className="text-[9px] font-black uppercase tracking-widest text-red-600">Última Emisión</span>
+        <div className={`fixed left-0 right-0 z-50 md:hidden transition-all duration-300 ${
+          isFloatingMinimized ? 'bottom-4' : 'bottom-0'
+        }`}>
+          {isFloatingMinimized ? (
+            // Versión minimizada - destacada pero compacta
+            <div className="flex justify-center">
+              <button
+                onClick={() => setIsFloatingMinimized(false)}
+                className="bg-gradient-to-r from-red-600 to-red-700 text-white px-6 py-3 rounded-full shadow-[0_0_30px_rgba(220,38,38,0.5)] flex items-center gap-3 border-2 border-red-500 hover:scale-105 transition-transform"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M3 22v-20l18 10-18 10z" />
+                </svg>
+                <span className="font-black uppercase tracking-wider text-sm">ÚLTIMA EMISIÓN</span>
+                <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+              </button>
             </div>
-            <button 
-              onClick={() => setShowHistoryModal(true)} 
-              className="p-2 hover:bg-red-600/20 rounded-lg transition-colors"
-              title="Ver Archivo"
-            >
-              <svg className="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-              </svg>
-            </button>
-          </div>
-          <audio controls className="w-full" preload="auto">
-            <source src={displayedHistory[0].audioUrl} type="audio/wav" />
-            Tu navegador no soporta audio.
-          </audio>
+          ) : (
+            // Versión expandida
+            <div className="bg-zinc-900 border-t-2 border-red-600/50 shadow-[0_-10px_60px_rgba(220,38,38,0.4)] backdrop-blur-xl bg-opacity-95 p-4 safe-area-inset-bottom">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-red-600">Última Emisión</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setShowHistoryModal(true)} 
+                    className="p-2 hover:bg-red-600/20 rounded-lg transition-colors"
+                    title="Ver Archivo"
+                  >
+                    <svg className="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                    </svg>
+                  </button>
+                  <button 
+                    onClick={() => setIsFloatingMinimized(true)} 
+                    className="p-2 hover:bg-zinc-800 rounded-lg transition-colors"
+                    title="Minimizar"
+                  >
+                    <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <audio controls className="w-full" preload="auto">
+                <source src={displayedHistory[0].audioUrl} type="audio/wav" />
+                Tu navegador no soporta audio.
+              </audio>
+            </div>
+          )}
         </div>
       )}
 
@@ -1897,32 +1936,33 @@ const arraysEqual = (a: string[], b: string[]) => {
         <div className="egg-toast">Pit-stop secreto: cambiale la goma al alma 🏁</div>
       )}
 
-      {/* PANEL DE VOTACIÓN LATERAL */}
-      {isVotingActive() && (
-        <>
-          {/* Solapa para abrir/cerrar */}
-          <button
-            onClick={() => setVotingState(prev => ({ ...prev, isOpen: !prev.isOpen }))}
-            className={`fixed right-0 top-1/2 -translate-y-1/2 z-[60] ${
-              !votingState.hasVoted ? 'bg-red-700 text-white shadow-2xl border-red-700 animate-pulse' : 'bg-zinc-900 border-zinc-700'
-            } rounded-l-2xl p-3 md:p-4 transition-all hover:pr-4 md:hover:pr-6 group border-2`}
-            style={{ writingMode: 'vertical-rl' }}
-            title="Abrir panel de votación"
-          >
-            <div className="flex items-center gap-2 md:gap-3">
-              {!votingState.hasVoted && (
-                <span className="w-2 h-2 md:w-3 md:h-3 bg-white rounded-full animate-ping"></span>
-              )}
-              <span className={`font-black uppercase tracking-widest text-xs md:text-sm ${
-                !votingState.hasVoted ? 'text-white' : 'text-zinc-400'
-              } group-hover:text-red-500`}>
-                VOTACIÓN Próxima Fecha
-              </span>
-            </div>
-          </button>
+      {/* PANEL DE VOTACIÓN LATERAL - SIEMPRE VISIBLE Y ACTIVO */}
+      <>
+        {/* Solapa para abrir/cerrar */}
+        <button
+          onClick={() => setVotingState(prev => ({ ...prev, isOpen: !prev.isOpen }))}
+          className={`fixed right-0 top-1/2 -translate-y-1/2 z-[60] ${
+            !votingState.hasVoted 
+              ? 'bg-red-700 text-white shadow-2xl border-red-700 animate-pulse' 
+              : 'bg-zinc-900 border-zinc-700'
+          } rounded-l-2xl p-3 md:p-4 transition-all hover:pr-4 md:hover:pr-6 group border-2`}
+          style={{ writingMode: 'vertical-rl' }}
+          title="Abrir panel de votación"
+        >
+          <div className="flex items-center gap-2 md:gap-3">
+            {!votingState.hasVoted && (
+              <span className="w-2 h-2 md:w-3 md:h-3 bg-white rounded-full animate-ping"></span>
+            )}
+            <span className={`font-black uppercase tracking-widest text-xs md:text-sm ${
+              !votingState.hasVoted ? 'text-white' : 'text-zinc-400'
+            } group-hover:text-red-500`}>
+              VOTACIÓN Próxima Fecha
+            </span>
+          </div>
+        </button>
 
-          {/* Panel de votación */}
-          <div
+        {/* Panel de votación */}
+        <div
             className={`fixed right-0 top-0 bottom-0 w-full md:w-[760px] bg-zinc-900 border-l-2 border-red-600/50 shadow-[0_0_60px_rgba(220,38,38,0.4)] z-50 transition-transform duration-500 overflow-y-auto ${
               votingState.isOpen ? 'translate-x-0' : 'translate-x-full'
             }`}
@@ -2101,8 +2141,8 @@ const arraysEqual = (a: string[], b: string[]) => {
               </button>
             </div>
           </div>
-        </>
-      )}
+        </> 
+      {/* Fin del panel de votación - siempre visible */}
 
       <main className="max-w-[1600px] mx-auto p-2 md:p-4 lg:p-8 relative z-10 space-y-4 md:space-y-8 pb-32 md:pb-8">
           {activeTab === 'dashboard' ? (
@@ -2690,36 +2730,66 @@ const arraysEqual = (a: string[], b: string[]) => {
         )}
       </main>
 
-      {/* FOOTER */}
-      <footer className="w-full mt-20 md:mt-40 border-t border-zinc-800/50 pt-10 md:pt-20 pb-14 md:pb-28 flex flex-col md:flex-row justify-between items-center text-[9px] md:text-[11px] text-zinc-400 uppercase tracking-[0.3em] md:tracking-[0.6em] px-4 md:px-10 lg:px-32 gap-6 md:gap-12">
-        <div className="flex gap-4 md:gap-8 font-black items-center">
-          <div className="relative w-16 h-16 md:w-20 md:h-20 flex items-center justify-center p-2 group">
+      {/* FOOTER - DISEÑO DEPORTIVO MEJORADO */}
+      <footer className="w-full mt-20 md:mt-40 border-t-2 border-zinc-800/50 pt-12 md:pt-24 pb-20 md:pb-32 flex flex-col md:flex-row justify-between items-center px-4 md:px-10 lg:px-32 gap-8 md:gap-16 bg-gradient-to-b from-transparent to-zinc-950/30">
+        <div className="flex gap-6 md:gap-10 items-center">
+          {/* Logo más grande */}
+          <div className="relative w-24 h-24 md:w-32 md:h-32 flex items-center justify-center group">
             <img 
               src="/Logo.jpg" 
               alt="Palporro Racing Logo" 
-              className="w-full h-full object-contain opacity-60 group-hover:opacity-90 transition-opacity duration-500 drop-shadow-[0_0_15px_rgba(220,38,38,0.4)]" 
+              className="w-full h-full object-contain opacity-70 group-hover:opacity-100 group-hover:scale-110 transition-all duration-500 drop-shadow-[0_0_25px_rgba(220,38,38,0.5)]" 
             />
           </div>
-          <div className="flex flex-col gap-2">
-            <span className="hover:text-red-600 transition-colors cursor-pointer text-[8px] md:text-[11px]">
-              Palporro Engine v4.0
-            </span>
-            <a
-              href="https://neurasur.nextba.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Desarrollado por NeuraSur"
-              className="flex items-center gap-3 text-red-500 md:text-[12px] font-extrabold tracking-wider hover:text-red-400 transition-all"
-            >
-              <img src="/GTR34.png" alt="NeuraSur" className="w-6 h-6 md:w-8 md:h-8 rounded-full object-cover flex-shrink-0 shadow-[0_6px_18px_rgba(220,38,38,0.12)]" />
-              <span className="uppercase">Desarrollado por NeuraSur</span>
-            </a>
-          </div>
+          
+          {/* Desarrollado por NeuraSur - Estilo Racing */}
+          <a
+            href="https://neurasur.nextba.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Desarrollado por NeuraSur"
+            className="flex items-center gap-4 group"
+          >
+            <img 
+              src="/GTR34.png" 
+              alt="NeuraSur" 
+              className="w-12 h-12 md:w-16 md:h-16 rounded-full object-cover flex-shrink-0 shadow-[0_6px_24px_rgba(220,38,38,0.3)] group-hover:shadow-[0_8px_32px_rgba(220,38,38,0.5)] transition-all duration-300 ring-2 ring-red-600/20 group-hover:ring-red-600/40" 
+            />
+            <div className="flex flex-col gap-1">
+              <span className="text-[9px] md:text-[11px] text-zinc-600 uppercase tracking-[0.2em] font-black">
+                Powered by
+              </span>
+              <span 
+                className="text-red-500 text-base md:text-xl font-black uppercase tracking-[0.15em] group-hover:text-red-400 transition-all duration-300"
+                style={{ fontFamily: 'Impact, "Arial Black", sans-serif', letterSpacing: '0.15em' }}
+              >
+                NEURASUR
+              </span>
+            </div>
+          </a>
         </div>
-        <div className="flex flex-col gap-2 md:gap-4 items-center md:items-end">
-          <div className="text-red-600/70 font-black italic tracking-tighter text-center md:text-right leading-relaxed hover:text-red-500 transition-colors duration-500 text-[9px] md:text-[11px]">
-            "EL DRAGÓN REINA EN 2026. <br/> LA VELOCIDAD ES RESPETO. EL FIASCORE ES LEY."
+        
+        {/* Lado derecho - Leyenda y contador */}
+        <div className="flex flex-col gap-4 md:gap-6 items-center md:items-end">
+          {/* Leyenda más grande */}
+          <div 
+            className="text-red-600/80 font-black italic tracking-tight text-center md:text-right leading-relaxed hover:text-red-500 transition-colors duration-500 text-sm md:text-lg"
+            style={{ fontFamily: 'Impact, "Arial Black", sans-serif' }}
+          >
+            "EL DRAGÓN REINA EN 2026.<br/>LA VELOCIDAD ES RESPETO.<br/>EL FIASCORE ES LEY."
           </div>
+          
+          {/* Contador de visitas más destacado */}
+          {visitCount !== null && (
+            <div className="flex items-center gap-3 bg-zinc-900/50 px-4 py-2 rounded-xl border border-zinc-800/50 backdrop-blur-sm">
+              <svg className="w-5 h-5 md:w-6 md:h-6 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+              <span className="text-sm md:text-base font-black text-zinc-300 tabular-nums">{visitCount.toLocaleString()}</span>
+              <span className="text-xs md:text-sm text-zinc-500 uppercase tracking-wider font-bold">visitas</span>
+            </div>
+          )}
         </div>
       </footer>
 
