@@ -344,21 +344,67 @@ const arraysEqual = (a: string[], b: string[]) => {
   const handleAnalyzeMetrics = async () => {
     if (!metricsInput.trim()) return;
     setIsAnalyzing(true);
+    setAnalysis(''); // Limpiar análisis anterior
     try {
       const genAI = new GoogleGenerativeAI(geminiKey);
       const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.5-flash-lite',
-        systemInstruction: ANALYSIS_SYSTEM_INSTRUCTION,
+        model: 'gemini-2.5-flash-preview-09-2025',
         generationConfig: {
           responseMimeType: "application/json",
         }
       });
-      const result = await model.generateContent(`Analizá estos datos: ${metricsInput}`);
-      const data = JSON.parse(result.response.text() || '{}');
-      setAnalysis(data.summary);
-      if (data.standings) setStandings(data.standings);
+
+      const prompt = `Actúa como un analista de datos de telemetría de simracing. Procesa el JSON raw de Assetto Corsa adjunto y devuelve estrictamente un objeto JSON.
+
+      REGLAS DE PROCESAMIENTO:
+      1. Detección de Formato:
+        - Identifica al piloto con posicion 1 en "Result".
+        - Cuenta sus vueltas en el array "Laps".
+        - Si son <= 4: "Carrera por Tiempo Límite". Si son > 4: "Carrera por Vueltas".
+
+      2. Clasificación y Estado:
+        - Ordenar por vueltas (desc) y TotalTime (asc).
+        - Si (Formato === 'Tiempo Límite' AND (vueltas < lider OR TotalTime === 0)): "Retirado (Falta de combustible)".
+        - Si no: "Finalizó".
+
+      3. Tiempos y Sectores:
+        - Convertir milisegundos a "MM:SS.mmm".
+        - Extraer el mínimo histórico de cada sector (S1, S2, S3) por piloto de todo el array "Laps".
+
+      4. Incidentes:
+        - Contar eventos "COLLISION_WITH_ENV" por piloto.
+
+      ESTRUCTURA DE SALIDA (JSON):
+      {
+        "sesion_info": { "pista": "string", "formato": "string", "vehiculo_unico": "string" },
+        "clasificacion_completa": [
+          {
+            "posicion": 0,
+            "nombre": "string",
+            "vueltas": 0,
+            "tiempo_total": "string",
+            "mejor_vuelta": "string",
+            "mejores_sectores": { "S1": "string", "S2": "string", "S3": "string" },
+            "estado": "string",
+            "incidentes": 0
+          }
+        ],
+        "datos_relevantes": { "rendimiento": "string", "resumen_jornada": "string" }
+      }
+
+      JSON RAW A PROCESAR:
+      ${metricsInput.trim()}`;
+
+      const result = await model.generateContent(prompt);
+      const responseText = result.response.text() || '{}';
+      
+      // Mostrar el JSON procesado en el área de análisis
+      setAnalysis(responseText);
+      
+      console.log('✅ Telemetría procesada:', responseText);
     } catch (err) {
-      console.error(err);
+      console.error('❌ Error procesando telemetría:', err);
+      setAnalysis(JSON.stringify({ error: 'Error al procesar los datos. Verifica que el JSON sea válido.' }, null, 2));
     } finally {
       setIsAnalyzing(false);
     }
@@ -2507,10 +2553,87 @@ const arraysEqual = (a: string[], b: string[]) => {
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
                   <div className="space-y-6">
-                    <textarea value={metricsInput} onChange={(e) => setMetricsInput(e.target.value)} placeholder="Pegue aquí los registros del servidor (Logs)..." className="w-full h-80 bg-zinc-950 border border-zinc-800 rounded-[2rem] p-8 font-mono text-[12px] text-zinc-400 focus:outline-none focus:border-red-600 transition-all resize-none shadow-2xl placeholder:opacity-20" />
-                    <button onClick={handleAnalyzeMetrics} disabled={isAnalyzing || !metricsInput} className="w-full bg-zinc-100 text-zinc-950 font-black py-7 rounded-[1.5rem] uppercase text-[12px] tracking-[0.5em] hover:bg-white transition-all shadow-2xl disabled:opacity-20 flex items-center justify-center gap-6 border-b-6 border-zinc-300 active:border-b-0 active:translate-y-1">{isAnalyzing ? <div className="animate-spin h-6 w-6 border-4 border-zinc-950 border-t-transparent rounded-full" /> : 'Sincronizar Datos de Servidor'}</button>
+                    <div className="relative">
+                      <textarea 
+                        value={metricsInput} 
+                        onChange={(e) => setMetricsInput(e.target.value)} 
+                        placeholder="Pegá aquí el JSON raw de Assetto Corsa Server Manager..." 
+                        className="w-full h-80 bg-zinc-950 border border-zinc-800 rounded-[2rem] p-8 font-mono text-[12px] text-zinc-400 focus:outline-none focus:border-red-600 transition-all resize-none shadow-2xl placeholder:opacity-20" 
+                      />
+                      <div className="absolute top-4 right-4 text-[9px] text-zinc-600 font-black uppercase tracking-wider">
+                        JSON Input
+                      </div>
+                    </div>
+                    <button 
+                      onClick={handleAnalyzeMetrics} 
+                      disabled={isAnalyzing || !metricsInput} 
+                      className="w-full bg-gradient-to-r from-red-600 to-red-700 text-white font-black py-7 rounded-[1.5rem] uppercase text-[12px] tracking-[0.5em] hover:from-red-700 hover:to-red-800 transition-all shadow-2xl disabled:opacity-20 flex items-center justify-center gap-6 border-b-4 border-red-900 active:border-b-0 active:translate-y-1"
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <div className="animate-spin h-6 w-6 border-4 border-white border-t-transparent rounded-full" />
+                          <span>Procesando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                          <span>Procesar Telemetría</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                  <div className={`flex-1 min-h-[300px] bg-zinc-950/40 border-2 border-dashed border-zinc-800 rounded-[2rem] p-10 flex flex-col justify-center items-center text-center ${analysis ? 'border-solid border-blue-600/30 bg-blue-600/5' : ''}`}>{!analysis && !isAnalyzing && <div className="opacity-20 italic space-y-4"><p className="text-4xl font-black uppercase tracking-tighter">Esperando Datos</p></div>}{analysis && (<div className="text-left space-y-6 animate-in zoom-in-95 duration-700"><h4 className="text-[10px] font-black uppercase text-blue-500 tracking-[0.6em] italic border-b border-blue-900/30 pb-4">Reporte del Comisariato IA</h4><p className="text-[18px] text-zinc-200 font-bold italic leading-[1.8]">"{analysis}"</p></div>)}</div>
+                  
+                  {/* Área de salida mejorada */}
+                  <div className={`flex-1 min-h-[300px] rounded-[2rem] p-6 flex flex-col relative ${
+                    analysis 
+                      ? 'bg-zinc-950 border-2 border-green-600/30' 
+                      : 'bg-zinc-950/40 border-2 border-dashed border-zinc-800'
+                  }`}>
+                    {!analysis && !isAnalyzing && (
+                      <div className="flex-1 flex flex-col items-center justify-center opacity-20 italic space-y-4">
+                        <svg className="w-20 h-20 text-zinc-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <p className="text-2xl font-black uppercase tracking-tighter text-zinc-700">Esperando JSON</p>
+                        <p className="text-xs text-zinc-700">Pegá el JSON raw y procesalo</p>
+                      </div>
+                    )}
+                    
+                    {analysis && (
+                      <div className="flex-1 flex flex-col animate-in zoom-in-95 duration-700">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-[10px] font-black uppercase text-green-500 tracking-[0.6em] italic">
+                            JSON Procesado
+                          </h4>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(analysis);
+                              alert('✅ JSON copiado al portapapeles');
+                            }}
+                            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                            Copiar JSON
+                          </button>
+                        </div>
+                        <div className="flex-1 bg-black/40 rounded-xl p-4 overflow-auto border border-green-900/30">
+                          <pre className="text-[11px] text-green-300 font-mono leading-relaxed whitespace-pre-wrap break-words">
+                            {(() => {
+                              try {
+                                return JSON.stringify(JSON.parse(analysis), null, 2);
+                              } catch {
+                                return analysis;
+                              }
+                            })()}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
             </section>
           </div>
@@ -2870,18 +2993,38 @@ const arraysEqual = (a: string[], b: string[]) => {
 
       {selectedHistoryRace ? (
         <div className="p-8">
-            <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-3xl font-black uppercase italic">{selectedHistoryRace.track_name}</h2>
-                <div className="text-[11px] text-zinc-400 mt-1">{selectedHistoryRace.scheduled_day} • {selectedHistoryRace.scheduled_time}</div>
+            {/* Header con imagen del circuito */}
+            <div className="flex items-start justify-between mb-8 gap-6">
+              <div className="flex-1">
+                <div className="flex items-center gap-4 mb-2">
+                  <h2 className="text-4xl font-black uppercase italic tracking-tight">{selectedHistoryRace.track_name}</h2>
+                  {selectedHistoryRace.track_name && selectedHistoryRace.track_name.toLowerCase() !== 'training' && (
+                    <div className="relative w-24 h-24 bg-zinc-800/50 rounded-xl border border-zinc-700 overflow-hidden group">
+                      <img 
+                        src={`/tracks/${selectedHistoryRace.track_name.toLowerCase().replace(/\s+/g, '-')}.png`}
+                        alt={`${selectedHistoryRace.track_name} layout`}
+                        className="w-full h-full object-contain p-2 opacity-70 group-hover:opacity-100 transition-opacity"
+                        onError={(e) => {
+                          // Si no se encuentra la imagen, mostrar placeholder
+                          (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="rgb(113,113,122)" stroke-width="2"><path d="M3 12h18M3 12l6 6m-6-6l6-6m12 6l-6 6m6-6l-6-6"/></svg>';
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="text-xs text-zinc-400 mt-2">{selectedHistoryRace.scheduled_day} • {selectedHistoryRace.scheduled_time}</div>
                 {selectedHistoryRace.session_info && (
-                  <div className="text-[10px] text-zinc-500 mt-2">
-                    {selectedHistoryRace.session_info.formato && <span>{selectedHistoryRace.session_info.formato}</span>}
-                    {selectedHistoryRace.session_info.vehicle && <span className="ml-3">• {selectedHistoryRace.session_info.vehicle}</span>}
+                  <div className="text-[11px] text-zinc-500 mt-3 flex gap-4">
+                    {selectedHistoryRace.session_info.formato && (
+                      <span className="bg-zinc-800/50 px-3 py-1 rounded-lg">📋 {selectedHistoryRace.session_info.formato}</span>
+                    )}
+                    {selectedHistoryRace.session_info.vehicle && (
+                      <span className="bg-zinc-800/50 px-3 py-1 rounded-lg">🏎️ {selectedHistoryRace.session_info.vehicle}</span>
+                    )}
                   </div>
                 )}
               </div>
-              <div className="flex gap-2 items-center">
+              <div className="flex gap-2 items-start">
                 {!isEditingResults && selectedHistoryRace.id && (
                   <button
                     onClick={async () => {
@@ -3141,13 +3284,14 @@ const arraysEqual = (a: string[], b: string[]) => {
               </>
             )}
 
-           {/* Render de los resultados (editable si isEditingResults) */}
-           <div className="grid gap-4">
+           {/* Render de los resultados (editable si isEditingResults) - MEJORADO */}
+           <div className="space-y-3">
              {(isEditingResults ? editingResults || [] : selectedHistoryRace.race_results || []).map((res, idx) => (
-               <div key={idx} className="bg-zinc-800 p-4 rounded-xl flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                 <div className="flex items-center gap-3 flex-1">
-                   <div className="w-10">
-                     {isEditingResults ? (
+               <div key={idx} className={`bg-zinc-800/50 border ${res.isWinner ? 'border-yellow-600/50' : 'border-zinc-700'} p-5 rounded-2xl hover:bg-zinc-800/70 transition-all`}>
+                 {isEditingResults ? (
+                   // Modo edición
+                   <div className="flex flex-col gap-4">
+                     <div className="flex items-center gap-3">
                        <input type="number" value={res.position} onChange={(e) => {
                          const val = parseInt(e.target.value || '0', 10);
                          setEditingResults(prev => {
@@ -3156,97 +3300,130 @@ const arraysEqual = (a: string[], b: string[]) => {
                            copy[idx] = { ...copy[idx], position: val };
                            return copy;
                          });
-                       }} className="w-16 bg-zinc-900 p-2 rounded" />
-                     ) : (
-                       <span className="font-bold">{res.position}.</span>
-                     )}
-                   </div>
-                   <div className="flex-1">
-                     {isEditingResults ? (
+                       }} className="w-16 bg-zinc-900 p-2 rounded text-center" />
                        <input value={res.pilot} onChange={(e) => setEditingResults(prev => {
                          if (!prev) return prev;
                          const copy = [...prev];
                          copy[idx] = { ...copy[idx], pilot: e.target.value };
                          return copy;
-                       })} className="bg-zinc-900 p-2 rounded w-full" placeholder="Nombre del piloto" />
-                     ) : (
-                       <span className="font-bold">{res.pilot}</span>
-                     )}
-                   </div>
-                 </div>
-
-                 <div className="flex items-center gap-3 flex-wrap">
-                   {isEditingResults ? (
-                     <>
-                       <input value={res.totalTime} onChange={(e) => setEditingResults(prev => {
-                         if (!prev) return prev;
-                         const copy = [...prev];
-                         copy[idx] = { ...copy[idx], totalTime: e.target.value };
-                         return copy;
-                       })} className="bg-zinc-900 p-2 rounded w-28" placeholder="Tiempo" />
-                       <input value={res.bestLap} onChange={(e) => setEditingResults(prev => {
-                         if (!prev) return prev;
-                         const copy = [...prev];
-                         copy[idx] = { ...copy[idx], bestLap: e.target.value };
-                         return copy;
-                       })} className="bg-zinc-900 p-2 rounded w-28" placeholder="Mejor vuelta" />
-                       <label className="flex items-center gap-1 whitespace-nowrap text-xs">
-                         <input type="checkbox" checked={!!res.isWinner} onChange={(e) => setEditingResults(prev => {
-                           if (!prev) return prev;
-                           const copy = prev.map((r, i) => ({ ...r, isWinner: i === idx ? e.target.checked : false }));
-                           return copy;
-                         })} className="w-3 h-3" />
-                         <span>🏆</span>
-                       </label>
-                       <label className="flex items-center gap-1 whitespace-nowrap text-xs">
-                         <input type="checkbox" checked={!!res.isNoShow} onChange={(e) => setEditingResults(prev => {
-                           if (!prev) return prev;
-                           const copy = [...prev];
-                           copy[idx] = { ...copy[idx], isNoShow: e.target.checked };
-                           return copy;
-                         })} className="w-3 h-3" />
-                         <span>❌ No-Show</span>
-                       </label>
+                       })} className="bg-zinc-900 p-2 rounded flex-1" placeholder="Nombre del piloto" />
                        <button
                          onClick={() => setEditingResults(prev => {
                            if (!prev) return prev;
                            return prev.filter((_, i) => i !== idx);
                          })}
-                         className="p-1.5 bg-red-600 hover:bg-red-700 rounded-lg text-white transition-all"
+                         className="p-2 bg-red-600 hover:bg-red-700 rounded-lg text-white transition-all"
                          title="Eliminar"
                        >
-                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                          </svg>
                        </button>
-                     </>
-                   ) : (
-                     <>
-                       <div className="flex flex-col gap-1">
-                         <div className="flex items-center gap-3">
-                           <span className="text-red-500 font-mono text-sm">{res.totalTime}</span>
-                           <span className="text-zinc-400 font-mono text-xs">{res.bestLap}</span>
-                           {res.isWinner && <span className="text-yellow-400 font-black text-xs">🏆</span>}
-                           {res.isNoShow && <span className="text-red-400 font-black text-xs">❌ NO SHOW</span>}
+                     </div>
+                     <div className="flex gap-3 flex-wrap">
+                       <input value={res.totalTime} onChange={(e) => setEditingResults(prev => {
+                         if (!prev) return prev;
+                         const copy = [...prev];
+                         copy[idx] = { ...copy[idx], totalTime: e.target.value };
+                         return copy;
+                       })} className="bg-zinc-900 p-2 rounded w-32" placeholder="Tiempo total" />
+                       <input value={res.bestLap} onChange={(e) => setEditingResults(prev => {
+                         if (!prev) return prev;
+                         const copy = [...prev];
+                         copy[idx] = { ...copy[idx], bestLap: e.target.value };
+                         return copy;
+                       })} className="bg-zinc-900 p-2 rounded w-32" placeholder="Mejor vuelta" />
+                       <label className="flex items-center gap-2 bg-zinc-900 px-3 py-2 rounded">
+                         <input type="checkbox" checked={!!res.isWinner} onChange={(e) => setEditingResults(prev => {
+                           if (!prev) return prev;
+                           const copy = prev.map((r, i) => ({ ...r, isWinner: i === idx ? e.target.checked : false }));
+                           return copy;
+                         })} />
+                         <span>🏆 Ganador</span>
+                       </label>
+                       <label className="flex items-center gap-2 bg-zinc-900 px-3 py-2 rounded">
+                         <input type="checkbox" checked={!!res.isNoShow} onChange={(e) => setEditingResults(prev => {
+                           if (!prev) return prev;
+                           const copy = [...prev];
+                           copy[idx] = { ...copy[idx], isNoShow: e.target.checked };
+                           return copy;
+                         })} />
+                         <span>❌ No-Show</span>
+                       </label>
+                     </div>
+                   </div>
+                 ) : (
+                   // Modo visualización MEJORADO
+                   <div className="flex flex-col gap-4">
+                     {/* Línea 1: Posición y Piloto */}
+                     <div className="flex items-center gap-4">
+                       <div className={`text-3xl font-black ${res.position === 1 ? 'text-yellow-500' : res.position === 2 ? 'text-zinc-400' : res.position === 3 ? 'text-orange-700' : 'text-zinc-600'} w-12 text-center`}>
+                         {res.position}
+                       </div>
+                       <div className="flex-1">
+                         <div className="text-xl font-black text-white uppercase tracking-wide flex items-center gap-3">
+                           {res.pilot}
+                           {res.isWinner && <span className="text-2xl">🏆</span>}
+                           {res.isNoShow && <span className="text-red-400 text-sm font-bold">❌ NO SHOW</span>}
                          </div>
-                         {(res.laps || res.incidents || res.status) && (
-                           <div className="text-[10px] text-zinc-500 flex gap-2">
-                             {res.laps && <span>Vueltas: {res.laps}</span>}
-                             {res.incidents !== undefined && <span>• Inc: {res.incidents}</span>}
-                             {res.status && <span>• {res.status}</span>}
+                       </div>
+                     </div>
+
+                     {/* Línea 2: Tiempos principales */}
+                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4 bg-zinc-900/50 p-4 rounded-xl">
+                       <div>
+                         <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Tiempo Total</div>
+                         <div className="text-lg font-mono font-black text-red-400">{res.totalTime || 'N/A'}</div>
+                       </div>
+                       <div>
+                         <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Mejor Vuelta</div>
+                         <div className="text-lg font-mono font-black text-green-400">{res.bestLap || 'N/A'}</div>
+                       </div>
+                       {res.laps && (
+                         <div>
+                           <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Vueltas</div>
+                           <div className="text-lg font-mono font-black text-blue-400">{res.laps}</div>
+                         </div>
+                       )}
+                     </div>
+
+                     {/* Línea 3: Sectores */}
+                     {res.bestSectors && (res.bestSectors.S1 || res.bestSectors.S2 || res.bestSectors.S3) && (
+                       <div className="grid grid-cols-3 gap-3">
+                         {res.bestSectors.S1 && (
+                           <div className="bg-purple-900/20 border border-purple-600/30 p-3 rounded-lg">
+                             <div className="text-[9px] text-purple-400 uppercase tracking-wider mb-1">Sector 1</div>
+                             <div className="text-sm font-mono font-bold text-purple-300">{res.bestSectors.S1}</div>
                            </div>
                          )}
-                         {res.bestSectors && (
-                           <div className="text-[9px] text-zinc-600 flex gap-2">
-                             {res.bestSectors.S1 && <span>S1: {res.bestSectors.S1}</span>}
-                             {res.bestSectors.S2 && <span>S2: {res.bestSectors.S2}</span>}
-                             {res.bestSectors.S3 && <span>S3: {res.bestSectors.S3}</span>}
+                         {res.bestSectors.S2 && (
+                           <div className="bg-blue-900/20 border border-blue-600/30 p-3 rounded-lg">
+                             <div className="text-[9px] text-blue-400 uppercase tracking-wider mb-1">Sector 2</div>
+                             <div className="text-sm font-mono font-bold text-blue-300">{res.bestSectors.S2}</div>
+                           </div>
+                         )}
+                         {res.bestSectors.S3 && (
+                           <div className="bg-green-900/20 border border-green-600/30 p-3 rounded-lg">
+                             <div className="text-[9px] text-green-400 uppercase tracking-wider mb-1">Sector 3</div>
+                             <div className="text-sm font-mono font-bold text-green-300">{res.bestSectors.S3}</div>
                            </div>
                          )}
                        </div>
-                     </>
-                   )}
-                 </div>
+                     )}
+
+                     {/* Línea 4: Info adicional */}
+                     {(res.incidents !== undefined || res.status) && (
+                       <div className="flex gap-4 text-xs text-zinc-500">
+                         {res.incidents !== undefined && (
+                           <span className="bg-red-900/20 px-3 py-1 rounded-lg">⚠️ Incidentes: {res.incidents}</span>
+                         )}
+                         {res.status && (
+                           <span className="bg-zinc-800 px-3 py-1 rounded-lg">{res.status}</span>
+                         )}
+                       </div>
+                     )}
+                   </div>
+                 )}
                </div>
              ))}
              
