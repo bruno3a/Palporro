@@ -886,8 +886,9 @@ export const upsertStandings = async (
 
 export async function incrementVisits(environment: 'PROD' | 'TEST' = 'PROD') {
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) {
+    // Use the existing getClient function which returns the initialized Supabase client.
+    const client = getClient(environment);
+    if (!client) {
       console.warn('Supabase client not available');
       return false;
     }
@@ -910,7 +911,7 @@ export async function incrementVisits(environment: 'PROD' | 'TEST' = 'PROD') {
       $$;
     */
     
-    const { error } = await supabase.rpc('increment_visit_counter', { 
+    const { error } = await client.rpc('increment_visit_counter', { 
       env: environment 
     });
 
@@ -931,13 +932,13 @@ export async function incrementVisits(environment: 'PROD' | 'TEST' = 'PROD') {
  */
 export async function getVisitCount(environment: 'PROD' | 'TEST' = 'PROD'): Promise<number> {
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) {
+    const client = getClient(environment);
+    if (!client) {
       console.warn('Supabase client not available');
       return 0;
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await client
       .from('visit_counter')
       .select('count')
       .eq('environment', environment)
