@@ -269,6 +269,24 @@ const arraysEqual = (a: string[], b: string[]) => {
     }
   };
 
+  // Helper: Obtener información de la próxima pista (útil para debugging)
+  const getCurrentNextTrack = () => {
+    if (nextTrackIndex === -1 || !tracks[nextTrackIndex]) {
+      return { name: 'Fin de temporada', index: -1 };
+    }
+    return {
+      name: tracks[nextTrackIndex].name,
+      index: nextTrackIndex,
+      completed: tracks[nextTrackIndex].completed
+    };
+  };
+
+  // LOG en consola cada vez que cambie nextTrackIndex (para debugging)
+  useEffect(() => {
+    const info = getCurrentNextTrack();
+    console.log('🎯 PRÓXIMA PISTA ACTIVA:', info);
+  }, [nextTrackIndex]);
+
   const fiaScoreData = useMemo(() => {
     if (completedCount === 0) return { value: 0, label: "PENDIENTE", isPending: true };
     const totalPilots = PILOTS.length;
@@ -1467,7 +1485,8 @@ const arraysEqual = (a: string[], b: string[]) => {
     incrementVisitCount();
   }, []);
 
-  // When raceHistory changes, mark completed tracks and pick next random track
+  // When raceHistory changes, mark completed tracks and pick next track
+  // IMPORTANTE: Solo recalcular si se agregó una pista nueva (no al recargar resultados)
   useEffect(() => {
     try {
       // Determine completed track names (from raceHistory) in chronological order
@@ -1545,9 +1564,21 @@ const arraysEqual = (a: string[], b: string[]) => {
 
       // Update nextTrackIndex to point to the nextEntry we placed (it's right after completedTracks)
       const computedIdx = completedTracks.length; // index of next if it exists
-      setNextTrackIndex(nextName ? computedIdx : -1);
+      const previousNextTrackIndex = nextTrackIndex;
+      const newNextTrackIndex = nextName ? computedIdx : -1;
+      
+      setNextTrackIndex(newNextTrackIndex);
+      
+      // LOG para ver qué pista es la próxima (visible en consola para todos los usuarios)
+      console.log('🏁 PRÓXIMA PISTA CALCULADA:', {
+        proximaPista: nextName || 'Fin de temporada',
+        indice: newNextTrackIndex,
+        pistasCompletadas: completedTracks.map(t => t.name),
+        pistasRestantes: remainingTracks.map(t => t.name),
+        cambioDetectado: previousNextTrackIndex !== newNextTrackIndex ? '✅ SÍ (nueva pista)' : '❌ NO (recarga de resultados)'
+      });
     } catch (e) {
-      // ignore
+      console.error('Error calculando próxima pista:', e);
     }
   }, [raceHistory]);
 
