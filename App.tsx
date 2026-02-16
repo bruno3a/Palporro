@@ -262,8 +262,8 @@ const arraysEqual = (a: string[], b: string[]) => {
         const fallback = tracksArr.findIndex(t => !t.completed);
         return fallback === -1 ? 0 : fallback;
       }
-      const chosen = candidates[Math.floor(Math.random() * candidates.length)];
-      return chosen.i;
+      // CAMBIO: NO usar random - usar el primero de los candidatos (consistente para todos los usuarios)
+      return candidates[0].i;
     } catch (e) {
       return tracksArr.findIndex(t => !t.completed) || 0;
     }
@@ -1511,25 +1511,15 @@ const arraysEqual = (a: string[], b: string[]) => {
         }
       });
 
-      // Determine the 'next' track (persisted until that track receives results)
-      const persistedNext = localStorage.getItem('palporro_next_track');
-
-      let nextName: string | null = persistedNext || null;
-
-      // If persisted next is now completed (results uploaded), clear it so we can pick a new one
-      if (nextName && completedSet.has((nextName || '').toLowerCase())) {
-        nextName = null;
-        localStorage.removeItem('palporro_next_track');
-      }
-
-      // If we don't have a persisted next, choose one randomly among remainingTracks
-      if (!nextName) {
-        const idxChoice = pickRandomNextTrack([...completedTracks, ...remainingTracks], raceHistory);
-        const chosen = [...completedTracks, ...remainingTracks][idxChoice];
-        if (chosen) {
-          nextName = chosen.name;
-          try { localStorage.setItem('palporro_next_track', nextName); } catch(e){}
-        }
+      // Determine the 'next' track - DEBE SER CONSISTENTE PARA TODOS LOS USUARIOS
+      // NO usar localStorage ya que cada usuario tiene su propio storage
+      let nextName: string | null = null;
+      
+      // Determinar basándose en pistas no completadas
+      if (remainingTracks.length > 0) {
+        // Usar la primera pista no completada (consistente para todos)
+        // IMPORTANTE: Esto asegura que todos vean la misma "próxima pista"
+        nextName = remainingTracks[0].name;
       }
 
       // Build final ordered tracks: completed (in order), then next (if present and not already in completed), then the rest of remaining (excluding next)
