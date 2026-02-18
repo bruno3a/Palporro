@@ -12,7 +12,9 @@ import {
   moveVotesToRace, incrementVisits, getVisitCount,
   RaceHistory, RaceResult
 } from "./src/supabaseClient";
-import { normalizeRaceResults, getUnmappedPilots } from './pilotMapping';
+
+import { getPinnedTrack, pinNextTrack, subscribeToNextTrack } from "./src/supabaseClient.extra";
+import { normalizeRaceResults, getUnmappedPilots } from './PilotMapping';
 
 interface VoteData {
   slots: TimeSlot[];
@@ -1324,6 +1326,8 @@ ${metricsInput.trim()}`;
           const moved = await archiveRaceAndMoveVotes(raceNumber, trackName, nextRace.date, nextRace.day, nextRace.time, confirmedPilots, votesToArchive, environment as any);
           if (moved) console.log('Votos archivados y removidos de la tabla activa.');
           else console.warn('archiveRaceAndMoveVotes devolvió false.');
+          await pinNextTrack(null, environment); // resetea para la siguiente votación
+          setNextTrackIndex(-1);
         }
       } catch (e) {
         console.error('Error moviendo votos a historial:', e);
@@ -1480,7 +1484,11 @@ ${metricsInput.trim()}`;
         // ✅ Si es el primer voto, elegir pista aleatoria y fijarla
         if (prev.allVotes.length === 0 && votes.length > 0) {
           const chosenIdx = pickRandomNextTrack(tracks, raceHistory);
-          setNextTrackIndex(chosenIdx);
+          const chosenName = tracks[chosenIdx]?.name;
+          if (chosenName) {
+            pinNextTrack(chosenName, getEnvironment()); // persiste para todos en Supabase
+            setNextTrackIndex(chosenIdx);
+          }
         }
         return { ...prev, allVotes: votes };
       });
@@ -1568,6 +1576,33 @@ ${metricsInput.trim()}`;
     };
     loadHistory();
   }, []);
+
+  useEffect(() => {
+    const loadPinnedTrack = async () => {
+      const environment = getEnvironment();
+      const pinned = await getPinnedTrack(environment);
+      if (pinned) {
+        const idx = tracks.findIndex(t => t.name === pinned);
+        if (idx !== -1) setNextTrackIndex(idx);
+      } else {
+        setNextTrackIndex(-1); // sin pista → "Pendiente de votación"
+      }
+    };
+    loadPinnedTrack();
+  }, []);
+
+  useEffect(() => {
+    const environment = getEnvironment();
+    const unsub = subscribeToNextTrack(environment, (trackName) => {
+      if (trackName) {
+        const idx = tracks.findIndex(t => t.name === trackName);
+        if (idx !== -1) setNextTrackIndex(idx);
+      } else {
+        setNextTrackIndex(-1);
+      }
+    });
+    return unsub;
+  }, [tracks]);
 
   // Contador de visitas - incrementar al cargar la página
   useEffect(() => {
