@@ -58,6 +58,7 @@ const App: React.FC = () => {
   const [jsonInput, setJsonInput] = useState('');
   const [sessionInfo, setSessionInfo] = useState<any>(null);
   const [relevantData, setRelevantData] = useState<any>(null);
+  const [isAppReady, setIsAppReady] = useState(false);
   const RADIO_CODE = '1290';
   const geminiKey = import.meta.env.VITE_GEMINI_API_KEY
     || (window as any).__PALPORRO_CONFIG?.VITE_GEMINI_API_KEY
@@ -1574,22 +1575,35 @@ ${metricsInput.trim()}`;
   }, []);
 
   // Cargar historial de carreras al montar - respetar environment actual
+  // When raceHistory changes, rebuild tracks order respecting the pinned track from Supabase
   useEffect(() => {
-    const loadHistory = async () => {
+    const loadApp = async () => {
       try {
         const env = getEnvironment() as 'PROD' | 'TEST' | 'DEV';
-        console.log('🏁 Cargando historial - Environment:', env);
 
-        const fetched = await getRaceHistory(env);
+        // Cargar historial y pista fijada en paralelo
+        const [fetched, pinned] = await Promise.all([
+          getRaceHistory(env),
+          getPinnedTrack(env)
+        ]);
+
         const sorted = (fetched || []).sort((a, b) => (b.race_number || 0) - (a.race_number || 0));
-
-        console.log(`🏁 Historial ${env}:`, sorted.length, 'carreras');
         setRaceHistory(sorted);
+
+        // Setear pista fijada directamente, antes de que el useEffect de raceHistory se ejecute
+        if (pinned) {
+          const idx = INITIAL_TRACKS.findIndex(t => t === pinned);
+          if (idx !== -1) setNextTrackIndex(idx);
+        } else {
+          setNextTrackIndex(-1);
+        }
       } catch (err) {
-        console.error('❌ Error cargando historial:', err);
+        console.error('❌ Error cargando app:', err);
+      } finally {
+        setIsAppReady(true);
       }
     };
-    loadHistory();
+    loadApp();
   }, []);
 
   useEffect(() => {
@@ -1891,7 +1905,17 @@ ${metricsInput.trim()}`;
           )}
         </div>
       )}
-
+      {/* PANTALLA DE CARGA */}
+    {!isAppReady && introState === 'done' && (
+      <div className="fixed inset-0 z-[190] bg-zinc-950 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-2 border-red-600 border-t-transparent rounded-full animate-spin" />
+          <span className="text-zinc-600 text-[10px] font-black uppercase tracking-[0.4em]">
+            Cargando
+          </span>
+        </div>
+      </div>
+    )}
       {/* Audio de fondo - se activa después del video */}
       <audio ref={bgAudioRef} src="/intro-bg.mp3" preload="auto" />
       <header className="w-full bg-zinc-900 border-b border-zinc-800 p-2 sticky top-0 z-50 shadow-2xl backdrop-blur-xl bg-opacity-95">
