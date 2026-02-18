@@ -796,6 +796,56 @@ export async function getVisitCount(environment: 'PROD' | 'TEST' = 'PROD'): Prom
   }
 }
 
+// ============================================
+// NEXT TRACK FUNCTIONS
+// Usa la columna `track_name` en palporro_votes para sincronizar
+// la próxima pista entre todos los usuarios.
+// Requiere: ALTER TABLE palporro_votes ADD COLUMN IF NOT EXISTS track_name TEXT;
+// ============================================
+
+export const getPinnedTrack = async (environment: string): Promise<string | null> => {
+  if (!supabase) return null;
+  const { data } = await supabase
+    .from('palporro_votes')
+    .select('track_name')
+    .eq('environment', environment)
+    .not('track_name', 'is', null)
+    .limit(1)
+    .maybeSingle();
+  return data?.track_name || null;
+};
+
+export const pinNextTrack = async (trackName: string | null, environment: string): Promise<boolean> => {
+  if (!supabase) return false;
+  const { error } = await supabase
+    .from('palporro_votes')
+    .update({ track_name: trackName })
+    .eq('environment', environment);
+  if (error) { console.error('Error pinning track:', error); return false; }
+  console.log('📍 Próxima pista fijada:', trackName);
+  return true;
+};
+
+export const subscribeToNextTrack = (
+  environment: string,
+  callback: (trackName: string | null) => void
+): (() => void) => {
+  if (!supabase) return () => {};
+  const channel = supabase
+    .channel(`next-track-${environment}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'palporro_votes', filter: `environment=eq.${environment}` },
+      async () => {
+        const track = await getPinnedTrack(environment);
+        callback(track);
+      }
+    )
+    .subscribe();
+  return () => { supabase!.removeChannel(channel); };
+};
+
+
 /*
 ══════════════════════════════════════════════════════════════
 SQL A EJECUTAR EN SUPABASE (SQL Editor)

@@ -10,10 +10,11 @@ import {
   saveRaceHistory, getRaceHistory, upsertRaceResults,
   getStandings, upsertStandings, getRaceById,
   moveVotesToRace, incrementVisits, getVisitCount,
-  RaceHistory, RaceResult
+  RaceHistory, RaceResult,
+  getPinnedTrack, pinNextTrack, subscribeToNextTrack
 } from "./src/supabaseClient";
 
-import { getPinnedTrack, pinNextTrack, subscribeToNextTrack } from "./src/supabaseClient.extra";
+//import { getPinnedTrack, pinNextTrack, subscribeToNextTrack } from "./src/supabaseClient.extra";
 import { normalizeRaceResults, getUnmappedPilots } from './PilotMapping';
 
 interface VoteData {
@@ -1646,104 +1647,73 @@ ${metricsInput.trim()}`;
   // When raceHistory changes, mark completed tracks and pick next track
   // IMPORTANTE: Solo recalcular si se agregó una pista nueva (no al recargar resultados)
   useEffect(() => {
-    try {
-      // Determine completed track names (from raceHistory) in chronological order
-      const completedSet = new Set<string>();
-      const completedOrder: string[] = [];
-      // raceHistory may contain multiple environments; prefer ordering by race_number asc (chronological)
-      const ordered = [...raceHistory].sort((a,b) => (a.race_number || 0) - (b.race_number || 0));
-      ordered.forEach(r => {
-        const name = (r.track_name || '').toLowerCase();
-        if (!name) return;
-        if (!completedSet.has(name) && (r.race_completed || (r.race_results && r.race_results.length > 0))) {
-          completedSet.add(name);
-          completedOrder.push(name);
+    const calculate = async () => {
+      try {
+        const completedSet = new Set<string>();
+        const completedOrder: string[] = [];
+        const ordered = [...raceHistory].sort((a,b) => (a.race_number || 0) - (b.race_number || 0));
+        ordered.forEach(r => {
+          const name = (r.track_name || '').toLowerCase();
+          if (!name) return;
+          if (!completedSet.has(name) && (r.race_completed || (r.race_results && r.race_results.length > 0))) {
+            completedSet.add(name);
+            completedOrder.push(name);
+          }
+        });
+
+        const completedTracks: TrackStatus[] = [];
+        const remainingTracks: TrackStatus[] = [];
+        tracks.forEach(t => {
+          const key = (t.name || '').toLowerCase();
+          if (!completedSet.has(key)) remainingTracks.push({ ...t, completed: false });
+        });
+        completedOrder.forEach(nameLower => {
+          const found = tracks.find(t => (t.name || '').toLowerCase() === nameLower);
+          if (found) completedTracks.push({ ...found, completed: true });
+        });
+        tracks.forEach(t => {
+          const key = (t.name || '').toLowerCase();
+          if (completedSet.has(key) && !completedTracks.find(ct => (ct.name || '').toLowerCase() === key)) {
+            completedTracks.push({ ...t, completed: true });
+          }
+        });
+
+        // ✅ FUENTE DE VERDAD: pista fijada en Supabase
+        let nextName: string | null = null;
+        if (remainingTracks.length > 0) {
+          const pinned = await getPinnedTrack(getEnvironment());
+          if (pinned && remainingTracks.find(t => t.name === pinned)) {
+            nextName = pinned;
+          }
+          // Sin pista fijada → null → muestra "Pendiente de votación"
         }
-      });
 
-      // Rebuild tracks so completed ones appear first in the order they were run
-      const completedTracks: TrackStatus[] = [];
-      const remainingTracks: TrackStatus[] = [];
-      tracks.forEach(t => {
-        const key = (t.name || '').toLowerCase();
-        if (completedSet.has(key)) {
-          // placeholder; we'll order them according to completedOrder
-          // find matching entry in completedOrder later
-        } else {
-          remainingTracks.push({ ...t, completed: false });
+        const finalTracks: TrackStatus[] = [];
+        completedTracks.forEach(t => finalTracks.push(t));
+        if (nextName) {
+          const nextEntry = remainingTracks.find(t => (t.name || '').toLowerCase() === nextName!.toLowerCase());
+          if (nextEntry) finalTracks.push({ ...nextEntry, completed: false });
         }
-      });
+        remainingTracks.forEach(t => {
+          if (!nextName || (t.name || '').toLowerCase() !== nextName.toLowerCase()) {
+            finalTracks.push({ ...t, completed: false });
+          }
+        });
 
-      // build completedTracks in the confirmed order
-      completedOrder.forEach(nameLower => {
-        const found = tracks.find(t => (t.name || '').toLowerCase() === nameLower);
-        if (found) completedTracks.push({ ...found, completed: true });
-      });
+        setTracks(finalTracks);
+        const newNextTrackIndex = nextName ? completedTracks.length : -1;
+        setNextTrackIndex(newNextTrackIndex);
 
-      // Now try to preserve any tracks that were completed but not in raceHistory ordering
-      tracks.forEach(t => {
-        const key = (t.name || '').toLowerCase();
-        if (completedSet.has(key) && !completedTracks.find(ct => (ct.name || '').toLowerCase() === key)) {
-          completedTracks.push({ ...t, completed: true });
-        }
-      });
-
-      // Determine the 'next' track - DEBE SER CONSISTENTE PARA TODOS LOS USUARIOS
-      // NO usar localStorage ya que cada usuario tiene su propio storage
-      let nextName: string | null = null;
-
-      if (remainingTracks.length > 0) {
-        // Si ya hay una pista fijada (elegida al primer voto), respetarla
-        const pinned = localStorage.getItem('palporro_next_track');
-        if (pinned && remainingTracks.find(t => t.name === pinned)) {
-          nextName = pinned;
-        } else if (votingState.allVotes.length > 0) {
-          // Hay votos pero no hay pista fijada → elegir aleatoriamente ahora
-          const chosenIdx = pickRandomNextTrack(remainingTracks, raceHistory);
-          nextName = remainingTracks[chosenIdx]?.name || remainingTracks[0].name;
-        }
-        // Si no hay votos → nextName queda null (muestra "Pendiente de votación")
+        console.log('🏁 PRÓXIMA PISTA CALCULADA:', {
+          proximaPista: nextName || 'Pendiente de votación',
+          indice: newNextTrackIndex,
+          pistasCompletadas: completedTracks.map(t => t.name),
+        });
+      } catch (e) {
+        console.error('Error calculando próxima pista:', e);
       }
-
-      // Build final ordered tracks: completed (in order), then next (if present and not already in completed), then the rest of remaining (excluding next)
-      const finalTracks: TrackStatus[] = [];
-      completedTracks.forEach(t => finalTracks.push(t));
-
-      if (nextName) {
-        const nextLower = nextName.toLowerCase();
-        const nextEntry = remainingTracks.find(t => (t.name || '').toLowerCase() === nextLower);
-        if (nextEntry) {
-          finalTracks.push({ ...nextEntry, completed: false });
-        }
-      }
-
-      // push the rest of remainingTracks except the chosen next
-      remainingTracks.forEach(t => {
-        if (!nextName || (t.name || '').toLowerCase() !== (nextName || '').toLowerCase()) {
-          finalTracks.push({ ...t, completed: false });
-        }
-      });
-
-      setTracks(finalTracks);
-
-      // Update nextTrackIndex to point to the nextEntry we placed (it's right after completedTracks)
-      const computedIdx = completedTracks.length; // index of next if it exists
-      const previousNextTrackIndex = nextTrackIndex;
-      const newNextTrackIndex = nextName ? computedIdx : -1;
-      
-      setNextTrackIndex(newNextTrackIndex);
-      
-      // LOG para ver qué pista es la próxima (visible en consola para todos los usuarios)
-      console.log('🏁 PRÓXIMA PISTA CALCULADA:', {
-        proximaPista: nextName || 'Fin de temporada',
-        indice: newNextTrackIndex,
-        pistasCompletadas: completedTracks.map(t => t.name),
-        pistasRestantes: remainingTracks.map(t => t.name),
-        cambioDetectado: previousNextTrackIndex !== newNextTrackIndex ? '✅ SÍ (nueva pista)' : '❌ NO (recarga de resultados)'
-      });
-    } catch (e) {
-      console.error('Error calculando próxima pista:', e);
-    }
+    };
+    calculate();
   }, [raceHistory]);
 
   // Cargar standings desde Supabase al montar
@@ -3690,5 +3660,6 @@ ${metricsInput.trim()}`;
     </div>
   );
 }
+
 
 export default App;
