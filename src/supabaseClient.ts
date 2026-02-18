@@ -28,9 +28,7 @@ export interface RaceResult {
   totalTime: string;
   bestLap: string;
   isWinner: boolean;
-  // Optional flag to mark that the pilot did not show up
   isNoShow?: boolean;
-  // Additional data from race JSON
   laps?: number;
   incidents?: number;
   status?: string;
@@ -53,16 +51,18 @@ export interface RaceHistory {
   race_results: RaceResult[];
   created_at: string;
   completed_at?: string;
-  // Additional race metadata
   session_info?: {
     track?: string;
     format?: string;
+    formato?: string;
     vehicle?: string;
   };
   relevant_data?: {
     performance?: string;
     summary?: string;
+    [key: string]: any;
   };
+  environment?: string;
 }
 
 // Helper: normalize race objects returned by Supabase so the UI can rely on
@@ -71,18 +71,9 @@ export interface RaceHistory {
 const normalizeRace = (r: any): RaceHistory | null => {
   if (!r) return null;
 
-  // If the API returned camelCase fields, mirror them to snake_case expected by UI
-  if (r.relevantData && !r.relevant_data) {
-    r.relevant_data = r.relevantData;
-  }
-  if (r.sessionInfo && !r.session_info) {
-    r.session_info = r.sessionInfo;
-  }
-
-  // Also ensure nested race_results is an array
-  if (!r.race_results && Array.isArray(r.raceResults)) {
-    r.race_results = r.raceResults;
-  }
+  if (r.relevantData && !r.relevant_data) r.relevant_data = r.relevantData;
+  if (r.sessionInfo && !r.session_info) r.session_info = r.sessionInfo;
+  if (!r.race_results && Array.isArray(r.raceResults)) r.race_results = r.raceResults;
 
   return r as RaceHistory;
 };
@@ -91,8 +82,11 @@ export let supabase = (supabaseUrl && supabaseAnonKey)
   ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
 
-const getClient = (environment: string) => {
-  return supabase; 
+// NOTA: Usamos UN SOLO cliente Supabase para todos los entornos.
+// La separación PROD/TEST/DEV se hace mediante la columna `environment` en cada tabla.
+// NO se usan proyectos o clientes distintos por entorno.
+const getClient = (_environment: string) => {
+  return supabase;
 };
 
 export function getEnvironment(): string {
@@ -100,10 +94,6 @@ export function getEnvironment(): string {
   const envFromRuntime = runtimeConfig?.VITE_ENVIRONMENT;
   const raw = String(envFromBuild || envFromRuntime || 'PROD');
 
-  // Normalize composite or unexpected environment values.
-  // If the runtime/build string contains 'PROD' prefer PROD, otherwise
-  // prefer TEST when present, then DEV. This avoids cases like 'PROD+TEST'
-  // causing the UI to fetch both TEST and PROD rows.
   let normalized = raw;
   try {
     const up = raw.toUpperCase();
@@ -135,7 +125,7 @@ export interface VoteData {
 }
 
 // Obtener todos los votos
-export async function getVotes(environment: string = 'TEST'): Promise<VoteData[]> {
+export async function getVotes(environment: string = 'PROD'): Promise<VoteData[]> {
   if (!supabase) return [];
 
   const { data, error } = await supabase
@@ -152,17 +142,12 @@ export async function getVotes(environment: string = 'TEST'): Promise<VoteData[]
 }
 
 // Obtener votos relevantes para la próxima carrera
-// Filtra por timestamp usando la fecha de inicio de votación (guardada en localStorage
-// como 'palporro_voting_start') o, en su defecto, calcula el último viernes 23:00
-// en zona local. Esto permite ignorar votos antiguos sin modificar la base de datos.
-export async function getRelevantVotes(environment: string = 'TEST'): Promise<VoteData[]> {
+export async function getRelevantVotes(environment: string = 'PROD'): Promise<VoteData[]> {
   try {
     const all = await getVotes(environment);
 
-    // Determinar cutoff
     let cutoff: Date | null = null;
     try {
-      // Respeta un override de desarrollo si está activado
       const devEnabled = typeof localStorage !== 'undefined' ? localStorage.getItem('palporro_dev_cutoff_enabled') === '1' : false;
       const devIso = typeof localStorage !== 'undefined' ? localStorage.getItem('palporro_dev_cutoff') : null;
       if (devEnabled && devIso) {
@@ -171,15 +156,11 @@ export async function getRelevantVotes(environment: string = 'TEST'): Promise<Vo
         const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('palporro_voting_start') : null;
         if (stored) cutoff = new Date(stored);
       }
-    } catch (e) {
-      // ignore localStorage errors
-    }
+    } catch (e) { /* ignore */ }
 
     if (!cutoff) {
-      // Calcular último viernes a las 23:00 hora local
       const now = new Date();
-      const day = now.getDay(); // 0=Sun .. 5=Fri .. 6=Sat
-      // días desde el último viernes
+      const day = now.getDay();
       const daysSinceFri = (day >= 5) ? day - 5 : (7 - (5 - day));
       const lastFri = new Date(now);
       lastFri.setDate(now.getDate() - daysSinceFri);
@@ -189,30 +170,15 @@ export async function getRelevantVotes(environment: string = 'TEST'): Promise<Vo
 
     const cutoffTs = cutoff.getTime();
 
-    // Debug logs para inspeccionar por qué el filtro no cambia en dev
-    try {
-      const sample = (all || []).slice(0,5).map((v: any) => ({ pilot: v.pilot, timestamp: v.timestamp, created_at: v.created_at }));
-      console.debug('getRelevantVotes:', { environment, cutoff: cutoff.toISOString(), cutoffTs, totalFetched: (all || []).length, sample });
-    } catch (e) { /* ignore */ }
-
-    // Filtrar votos cuyo timestamp (ms) sea posterior o igual al cutoff.
-    // Si no tenemos timestamp numérico, intentar usar created_at (si existe).
-    // Si no hay forma de determinar fecha, excluir el voto para evitar que
-    // votos "sin fecha" bloqueen el filtrado.
     const filtered = (all || []).filter(v => {
       if (!v) return false;
-      // Preferimos timestamp explícito (ms)
       const ts = typeof v.timestamp === 'number' ? v.timestamp : parseInt(String(v.timestamp || '0')) || 0;
       if (ts && ts >= cutoffTs) return true;
-
-      // Fallback: si la fila tiene created_at (Supabase), usarla
       const createdAtRaw = (v as any).created_at || (v as any).createdAt || null;
       if (createdAtRaw) {
         const createdTs = Date.parse(String(createdAtRaw));
         if (!isNaN(createdTs) && createdTs >= cutoffTs) return true;
       }
-
-      // No podemos confirmar que el voto sea reciente -> excluir
       return false;
     });
 
@@ -226,12 +192,10 @@ export async function getRelevantVotes(environment: string = 'TEST'): Promise<Vo
 // Agregar o actualizar voto (upsert)
 export async function addVote(
   voteData: VoteData,
-  environment: string = 'TEST'
+  environment: string = 'PROD'
 ): Promise<boolean> {
-  // Try using the supabase-js client first
   if (supabase) {
     try {
-      console.log('addVote: using supabase-js client');
       const { error } = await supabase
         .from('palporro_votes')
         .upsert({
@@ -244,19 +208,14 @@ export async function addVote(
           onConflict: 'pilot,environment'
         });
 
-      if (!error) {
-        console.log('addVote: supabase-js client upsert succeeded');
-        return true;
-      }
+      if (!error) return true;
       console.error('Error adding vote via supabase-js client:', error);
     } catch (err) {
       console.error('Supabase client upsert error:', err);
     }
-  } else {
-    console.warn('Supabase client not initialized - will try REST fallback');
   }
 
-  // REST fallback: POST directly to Supabase REST endpoint using anon key
+  // REST fallback
   if (supabaseUrl && supabaseAnonKey) {
     try {
       const url = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/palporro_votes?on_conflict=pilot,environment`;
@@ -268,7 +227,6 @@ export async function addVote(
         environment
       };
 
-      console.log('addVote: REST fallback POST', { url, payload });
       const resp = await fetch(url, {
         method: 'POST',
         headers: {
@@ -280,11 +238,7 @@ export async function addVote(
         body: JSON.stringify(payload)
       });
 
-      if (resp.ok) {
-        const js = await resp.json().catch(() => null);
-        console.log('addVote: REST fallback succeeded', js);
-        return true;
-      }
+      if (resp.ok) return true;
       const body = await resp.text().catch(() => '');
       console.error('addVote: REST fallback failed', resp.status, body);
       return false;
@@ -294,7 +248,6 @@ export async function addVote(
     }
   }
 
-  console.error('Supabase not available and no REST fallback configured');
   return false;
 }
 
@@ -303,12 +256,10 @@ export function subscribeToVotes(
   environment: string,
   callback: (votes: VoteData[]) => void
 ) {
-  if (!supabase) {
-    return () => {};
-  }
+  if (!supabase) return () => {};
 
   const channel = supabase
-    .channel('palporro-votes-changes')
+    .channel(`palporro-votes-changes-${environment}`)
     .on(
       'postgres_changes',
       {
@@ -329,23 +280,17 @@ export function subscribeToVotes(
   };
 }
 
-// Obtener estadísticas de votación (ahora basado en slots)
-export async function getVotingStats(environment: string = 'TEST') {
+// Obtener estadísticas de votación
+export async function getVotingStats(environment: string = 'PROD') {
   const votes = await getVotes(environment);
-
   const slotCount: Record<string, number> = {};
-
   votes.forEach(vote => {
     (vote.slots || []).forEach(slot => {
       const key = `${slot.day}|${slot.time}`;
       slotCount[key] = (slotCount[key] || 0) + 1;
     });
   });
-
-  return {
-    totalVotes: votes.length,
-    slotCount
-  };
+  return { totalVotes: votes.length, slotCount };
 }
 
 export async function getVoteByIp(
@@ -369,6 +314,10 @@ export async function getVoteByIp(
   return data;
 }
 
+// ============================================
+// RACE HISTORY FUNCTIONS
+// NOTA: PROD y TEST usan la MISMA tabla race_history, diferenciada por la columna `environment`.
+// ============================================
 
 export const saveRaceHistory = async (
   raceNumber: number,
@@ -377,11 +326,16 @@ export const saveRaceHistory = async (
   scheduledDay: string,
   scheduledTime: string,
   confirmedPilots: string[],
-  environment: 'PROD' | 'TEST'
+  environment: 'PROD' | 'TEST' | 'DEV'
 ): Promise<boolean> => {
   const client = getClient(environment);
+  if (!client) {
+    console.error('Supabase client not initialized');
+    return false;
+  }
+
   console.log('saveRaceHistory: environment, raceNumber, trackName', { environment, raceNumber, trackName });
-  
+
   const { data: insertResult, error } = await client
     .from('race_history')
     .insert({
@@ -393,7 +347,7 @@ export const saveRaceHistory = async (
       confirmed_pilots: confirmedPilots,
       race_completed: false,
       race_results: [],
-      environment: environment  // ← AGREGAR ESTA LÍNEA
+      environment
     });
 
   if (error) {
@@ -402,7 +356,6 @@ export const saveRaceHistory = async (
   }
 
   console.log('saveRaceHistory: insertResult', insertResult);
-
   return true;
 };
 
@@ -424,7 +377,6 @@ export const archiveRaceAndMoveVotes = async (
   }
 
   try {
-    // 1) Crear el registro en race_history y obtener el id
     const { data: inserted, error: errInsert } = await client
       .from('race_history')
       .insert({
@@ -436,7 +388,7 @@ export const archiveRaceAndMoveVotes = async (
         confirmed_pilots: confirmedPilots,
         race_completed: false,
         race_results: [],
-        environment: environment
+        environment
       })
       .select()
       .single();
@@ -448,10 +400,7 @@ export const archiveRaceAndMoveVotes = async (
 
     const raceId = (inserted as any).id;
 
-    // 2) Insertar votos en race_votes (histórico)
     if (Array.isArray(votesToArchive) && votesToArchive.length > 0) {
-      // Preserve each vote's original environment when archiving. If a vote row
-      // lacks an environment field, fall back to the environment argument.
       const toInsert = votesToArchive.map(v => ({
         race_id: raceId,
         pilot: v.pilot,
@@ -462,22 +411,13 @@ export const archiveRaceAndMoveVotes = async (
       }));
 
       try {
-        console.log('archiveRaceAndMoveVotes: inserting into race_votes', { raceId, count: toInsert.length, sample: toInsert.slice(0, 5) });
-        const { data: insertedVotes, error: errArchive } = await client.from('race_votes').insert(toInsert).select();
-        if (errArchive) {
-          console.error('Error inserting into race_votes:', errArchive);
-        } else {
-          console.log('archiveRaceAndMoveVotes: inserted votes into race_votes', { insertedCount: Array.isArray(insertedVotes) ? insertedVotes.length : 0 });
-        }
+        const { error: errArchive } = await client.from('race_votes').insert(toInsert);
+        if (errArchive) console.error('Error inserting into race_votes:', errArchive);
       } catch (e) {
         console.error('archiveRaceAndMoveVotes: exception inserting into race_votes', e);
       }
 
-      // 3) Eliminar votos archivados de la tabla activa para resetear votación
       try {
-        // Delete votes grouped by their original environment to avoid removing
-        // rows from the wrong environment. This handles mixed-environment inputs
-        // gracefully and preserves separation between PROD/TEST/DEV.
         const envGroups: Record<string, string[]> = {};
         votesToArchive.forEach(v => {
           const ev = ((v as any).environment) || environment;
@@ -487,19 +427,13 @@ export const archiveRaceAndMoveVotes = async (
 
         for (const ev of Object.keys(envGroups)) {
           const pilots = envGroups[ev];
-          console.log('archiveRaceAndMoveVotes: deleting from palporro_votes for environment', ev, { pilots });
-          const { data: deletedRows, error: errDel } = await client
+          const { error: errDel } = await client
             .from('palporro_votes')
             .delete()
             .in('pilot', pilots)
-            .eq('environment', ev)
-            .select();
+            .eq('environment', ev);
 
-          if (errDel) {
-            console.error('Error deleting palporro_votes during archive for environment ' + ev + ':', errDel);
-          } else {
-            console.log('archiveRaceAndMoveVotes: deleted rows from palporro_votes', { env: ev, deletedCount: Array.isArray(deletedRows) ? deletedRows.length : 0 });
-          }
+          if (errDel) console.error('Error deleting palporro_votes during archive for env ' + ev + ':', errDel);
         }
       } catch (e) {
         console.error('Failed deleting palporro_votes during archive:', e);
@@ -520,21 +454,11 @@ export const moveVotesToRace = async (
   environment: 'PROD' | 'DEV' | 'TEST'
 ): Promise<boolean> => {
   const client = getClient(environment);
-  if (!client) {
-    console.error('Supabase client not initialized');
-    return false;
-  }
+  if (!client) return false;
 
   try {
-    if (!raceId) {
-      console.error('moveVotesToRace: missing raceId');
-      return false;
-    }
-
-    if (!Array.isArray(votesToArchive) || votesToArchive.length === 0) {
-      console.log('moveVotesToRace: no votes to archive');
-      return true;
-    }
+    if (!raceId) return false;
+    if (!Array.isArray(votesToArchive) || votesToArchive.length === 0) return true;
 
     const toInsert = votesToArchive.map(v => ({
       race_id: raceId,
@@ -545,37 +469,17 @@ export const moveVotesToRace = async (
       environment
     }));
 
-    try {
-      console.log('moveVotesToRace: inserting into race_votes', { raceId, count: toInsert.length, sample: toInsert.slice(0,5) });
-      const { data: insertedVotes, error: errArchive } = await client.from('race_votes').insert(toInsert).select();
-      if (errArchive) {
-        console.error('moveVotesToRace: Error inserting into race_votes:', errArchive);
-      } else {
-        console.log('moveVotesToRace: inserted votes into race_votes', { insertedCount: Array.isArray(insertedVotes) ? insertedVotes.length : 0 });
-      }
-    } catch (e) {
-      console.error('moveVotesToRace: exception inserting into race_votes', e);
-    }
+    const { error: errArchive } = await client.from('race_votes').insert(toInsert);
+    if (errArchive) console.error('moveVotesToRace: Error inserting into race_votes:', errArchive);
 
-    // Eliminar votos archivados de la tabla activa para resetear votación
-    try {
-      const pilots = votesToArchive.map(v => v.pilot);
-      console.log('moveVotesToRace: deleting from palporro_votes', { pilots, environment });
-      const { data: deletedRows, error: errDel } = await client
-        .from('palporro_votes')
-        .delete()
-        .in('pilot', pilots)
-        .eq('environment', environment)
-        .select();
+    const pilots = votesToArchive.map(v => v.pilot);
+    const { error: errDel } = await client
+      .from('palporro_votes')
+      .delete()
+      .in('pilot', pilots)
+      .eq('environment', environment);
 
-      if (errDel) {
-        console.error('moveVotesToRace: Error deleting palporro_votes during archive:', errDel);
-      } else {
-        console.log('moveVotesToRace: deleted rows from palporro_votes', { deletedCount: Array.isArray(deletedRows) ? deletedRows.length : 0 });
-      }
-    } catch (e) {
-      console.error('moveVotesToRace: Failed deleting palporro_votes during archive:', e);
-    }
+    if (errDel) console.error('moveVotesToRace: Error deleting palporro_votes:', errDel);
 
     return true;
   } catch (err) {
@@ -590,20 +494,8 @@ export const updateRaceResults = async (
   environment: 'PROD' | 'TEST' | 'DEV'
 ): Promise<boolean> => {
   const client = getClient(environment);
-  
-  if (!client) {
-    console.error('Supabase client not initialized');
-    return false;
-  }
-
-  // Si race_number es -1, significa que es una carrera manual nueva
-  // En ese caso, debemos crear un nuevo registro
-  if (raceNumber === -1) {
-    console.error('Cannot update race with race_number -1. Use saveRaceHistory to create new races.');
-    return false;
-  }
-
-  console.log('Updating race results:', { raceNumber, environment, resultsCount: results.length });
+  if (!client) return false;
+  if (raceNumber === -1) return false;
 
   const { data, error } = await client
     .from('race_history')
@@ -613,26 +505,18 @@ export const updateRaceResults = async (
       completed_at: new Date().toISOString()
     })
     .eq('race_number', raceNumber)
-    .eq('environment', environment)  // ← AGREGAR FILTRO POR ENVIRONMENT
-    .select();  // ← AGREGAR SELECT PARA VER QUÉ SE ACTUALIZÓ
+    .eq('environment', environment)
+    .select();
 
-  if (error) {
-    console.error('Error updating race results:', error);
-    return false;
-  }
-
-  console.log('updateRaceResults: matched/updated rows', data);
-
-  if (!data || data.length === 0) {
-    console.warn('No race found to update with race_number:', raceNumber, 'and environment:', environment);
-    return false;
-  }
-
-  console.log('Race results updated successfully:', data[0]);
+  if (error) { console.error('Error updating race results:', error); return false; }
+  if (!data || data.length === 0) return false;
   return true;
 };
 
-// Nueva función para crear o actualizar una carrera completa
+// ============================================
+// upsertRaceResults
+// PROD y TEST usan la MISMA tabla race_history, diferenciadas por la columna `environment`.
+// ============================================
 export const upsertRaceResults = async (
   trackName: string,
   results: RaceResult[],
@@ -642,17 +526,15 @@ export const upsertRaceResults = async (
   relevantData?: any
 ): Promise<{ success: boolean; race?: RaceHistory }> => {
   const client = getClient(environment);
-  
-  if (!client) {
-    console.error('Supabase client not initialized');
-    return { success: false };
-  }
+  if (!client) return { success: false };
 
-  console.log('Upserting race results:', { trackName, environment, resultsCount: results.length, raceId });
+  console.log('upsertRaceResults:', { trackName, environment, resultsCount: results.length, raceId });
 
   try {
-    // Si tenemos un ID, intentar actualizar
-    if (raceId && !raceId.startsWith('manual-')) {
+    // Si tenemos un ID real (no generado localmente con prefijos manual-/empty-)
+    const isLocalId = !raceId || raceId.startsWith('manual-') || raceId.startsWith('empty-');
+
+    if (raceId && !isLocalId) {
       const { data: existing } = await client
         .from('race_history')
         .select('*')
@@ -661,39 +543,34 @@ export const upsertRaceResults = async (
         .single();
 
       if (existing) {
-        // Actualizar el registro existente
         const { data, error } = await client
           .from('race_history')
           .update({
             race_completed: true,
             race_results: results,
             completed_at: new Date().toISOString(),
-            session_info: sessionInfo || existing.session_info,
-            relevant_data: relevantData || existing.relevant_data
+            session_info: sessionInfo ?? existing.session_info ?? null,
+            relevant_data: relevantData ?? existing.relevant_data ?? null
           })
           .eq('id', raceId)
+          .eq('environment', environment)
           .select()
           .single();
 
-        if (error) {
-          console.error('Error updating race:', error);
-          return { success: false };
-        }
-
+        if (error) { console.error('Error updating race:', error); return { success: false }; }
         console.log('Race updated successfully:', data);
-        return { success: true, race: data };
+        return { success: true, race: normalizeRace(data) as RaceHistory };
       }
     }
 
-    // Si no existe o es manual, crear uno nuevo
-    // Buscar el race_number más alto para este environment
+    // Crear nuevo registro
     const { data: maxRace } = await client
       .from('race_history')
       .select('race_number')
       .eq('environment', environment)
       .order('race_number', { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
 
     const nextRaceNumber = (maxRace?.race_number || 0) + 1;
 
@@ -707,9 +584,9 @@ export const upsertRaceResults = async (
       race_completed: true,
       race_results: results,
       completed_at: new Date().toISOString(),
-      environment: environment,
-      session_info: sessionInfo,
-      relevant_data: relevantData
+      environment,
+      session_info: sessionInfo ?? null,
+      relevant_data: relevantData ?? null
     };
 
     const { data, error } = await client
@@ -718,13 +595,9 @@ export const upsertRaceResults = async (
       .select()
       .single();
 
-    if (error) {
-      console.error('Error creating race:', error);
-      return { success: false };
-    }
-
+    if (error) { console.error('Error creating race:', error); return { success: false }; }
     console.log('Race created successfully:', data);
-    return { success: true, race: data };
+    return { success: true, race: normalizeRace(data) as RaceHistory };
   } catch (err) {
     console.error('Error in upsertRaceResults:', err);
     return { success: false };
@@ -735,10 +608,7 @@ export const getRaceHistory = async (
   environment: 'PROD' | 'DEV' | 'TEST'
 ): Promise<RaceHistory[]> => {
   const client = getClient(environment);
-  if (!client) {
-    console.error('Supabase client not initialized in getRaceHistory');
-    return [];
-  }
+  if (!client) return [];
 
   const { data, error } = await client
     .from('race_history')
@@ -746,13 +616,8 @@ export const getRaceHistory = async (
     .eq('environment', environment)
     .order('race_number', { ascending: false });
 
-  if (error) {
-    console.error('Error fetching race history:', error);
-    return [];
-  }
+  if (error) { console.error('Error fetching race history:', error); return []; }
 
-  console.log('Race history fetched:', data);
-  // Normalize each race
   return (data || []).map((r: any) => normalizeRace(r)).filter(Boolean) as RaceHistory[];
 };
 
@@ -761,10 +626,7 @@ export const getRaceByNumber = async (
   environment: 'PROD' | 'TEST'
 ): Promise<RaceHistory | null> => {
   const client = getClient(environment);
-  if (!client) {
-    console.error('Supabase client not initialized in getRaceByNumber');
-    return null;
-  }
+  if (!client) return null;
 
   const { data, error } = await client
     .from('race_history')
@@ -773,11 +635,7 @@ export const getRaceByNumber = async (
     .eq('environment', environment)
     .single();
 
-  if (error) {
-    console.error('Error fetching race:', error);
-    return null;
-  }
-
+  if (error) { console.error('Error fetching race:', error); return null; }
   return normalizeRace(data);
 };
 
@@ -795,17 +653,13 @@ export const getRaceById = async (
     .eq('environment', environment)
     .single();
 
-  if (error) {
-    console.error('Error fetching race by id:', error);
-    return null;
-  }
-
-  // Normalize shape to ensure UI finds relevant_data/session_info
+  if (error) { console.error('Error fetching race by id:', error); return null; }
   return normalizeRace(data);
 };
 
 // ============================================
 // STANDINGS FUNCTIONS
+// NOTA: PROD y TEST usan la MISMA tabla standings, diferenciadas por la columna `environment`.
 // ============================================
 
 export interface StandingRecord {
@@ -824,11 +678,7 @@ export const getStandings = async (
   environment: 'PROD' | 'DEV' | 'TEST'
 ): Promise<StandingRecord[]> => {
   const client = getClient(environment);
-  
-  if (!client) {
-    console.error('Supabase client not initialized');
-    return [];
-  }
+  if (!client) return [];
 
   const { data, error } = await client
     .from('standings')
@@ -836,24 +686,16 @@ export const getStandings = async (
     .eq('environment', environment)
     .order('points', { ascending: false });
 
-  if (error) {
-    console.error('Error fetching standings:', error);
-    return [];
-  }
-
+  if (error) { console.error('Error fetching standings:', error); return []; }
   return data || [];
 };
 
 export const upsertStandings = async (
-  standings: StandingRecord[],
+  standings: Omit<StandingRecord, 'environment' | 'id' | 'updated_at'>[],
   environment: 'PROD' | 'DEV' | 'TEST'
 ): Promise<boolean> => {
   const client = getClient(environment);
-  
-  if (!client) {
-    console.error('Supabase client not initialized');
-    return false;
-  }
+  if (!client) return false;
 
   const records = standings.map(s => ({
     pilot: s.pilot,
@@ -862,7 +704,7 @@ export const upsertStandings = async (
     last_result: s.last_result,
     incidences: s.incidences,
     wins: s.wins || 0,
-    environment: environment,
+    environment,
     updated_at: new Date().toISOString()
   }));
 
@@ -870,73 +712,76 @@ export const upsertStandings = async (
 
   const { data, error } = await client
     .from('standings')
-    .upsert(records, {
-      onConflict: 'pilot,environment'
-    })
+    .upsert(records, { onConflict: 'pilot,environment' })
     .select();
 
-  if (error) {
-    console.error('❌ Error upserting standings:', error);
-    return false;
-  }
-
-  console.log('✅ Standings saved successfully to Supabase:', data);
+  if (error) { console.error('❌ Error upserting standings:', error); return false; }
+  console.log('✅ Standings saved successfully:', data);
   return true;
 };
 
-export async function incrementVisits(environment: 'PROD' | 'TEST' = 'PROD') {
-  try {
-    // Use the existing getClient function which returns the initialized Supabase client.
-    const client = getClient(environment);
-    if (!client) {
-      console.warn('Supabase client not available');
-      return false;
-    }
+// ============================================
+// VISIT COUNTER FUNCTIONS
+//
+// Lógica: una visita se contabiliza por IP + día calendario (zona AR).
+// - Si la misma IP ya visitó hoy → no incrementa, solo devuelve el total.
+// - Si es una IP nueva O la misma IP pero en un día distinto → incrementa.
+//
+// Requiere en Supabase:
+//   Tabla: visit_log      (ip TEXT, visit_date DATE, environment TEXT, PRIMARY KEY (ip, visit_date, environment))
+//   Tabla: visit_counter  (environment TEXT PRIMARY KEY, count INT, last_updated TIMESTAMPTZ)
+//   Función RPC: register_visit(p_ip TEXT, p_date DATE, p_env TEXT) → INT
+//     (ver SQL completo en el comentario al final de este archivo)
+// ============================================
 
-    // Usar RPC (Remote Procedure Call) para incrementar atómicamente
-    // Esta función debe existir en Supabase como:
-    /*
-      CREATE OR REPLACE FUNCTION increment_visit_counter(env text)
-      RETURNS void
-      LANGUAGE plpgsql
-      AS $$
-      BEGIN
-        INSERT INTO visit_counter (environment, count, last_updated)
-        VALUES (env, 1, NOW())
-        ON CONFLICT (environment)
-        DO UPDATE SET 
-          count = visit_counter.count + 1,
-          last_updated = NOW();
-      END;
-      $$;
-    */
-    
-    const { error } = await client.rpc('increment_visit_counter', { 
-      env: environment 
+/**
+ * Registra una visita si es la primera de esta IP hoy (hora AR).
+ * Devuelve el total actualizado de visitas únicas.
+ */
+export async function incrementVisits(
+  environment: 'PROD' | 'TEST' = 'PROD',
+  ip?: string
+): Promise<{ counted: boolean; total: number }> {
+  const fallback = { counted: false, total: 0 };
+  try {
+    const client = getClient(environment);
+    if (!client || !ip) return fallback;
+
+    // Fecha del día actual en zona horaria Argentina (UTC-3)
+    const arDate = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' })
+    );
+    const visitDate = arDate.toISOString().slice(0, 10); // "YYYY-MM-DD"
+
+    // Llamar a la función RPC que hace el upsert atómico y devuelve el total
+    const { data, error } = await client.rpc('register_visit', {
+      p_ip: ip,
+      p_date: visitDate,
+      p_env: environment
     });
 
     if (error) {
-      console.error('Error incrementing visit counter:', error);
-      return false;
+      console.error('Error registering visit:', error);
+      return fallback;
     }
 
-    return true;
+    // data es el nuevo total de visitas únicas
+    const total = typeof data === 'number' ? data : 0;
+    console.log('👁️ Visita registrada:', { ip, visitDate, environment, total });
+    return { counted: true, total };
   } catch (err) {
-    console.error('Exception incrementing visits:', err);
-    return false;
+    console.error('Exception in incrementVisits:', err);
+    return fallback;
   }
 }
 
 /**
- * Obtiene el contador actual de visitas
+ * Obtiene el total actual de visitas únicas (IP+día) para el entorno.
  */
 export async function getVisitCount(environment: 'PROD' | 'TEST' = 'PROD'): Promise<number> {
   try {
     const client = getClient(environment);
-    if (!client) {
-      console.warn('Supabase client not available');
-      return 0;
-    }
+    if (!client) return 0;
 
     const { data, error } = await client
       .from('visit_counter')
@@ -944,14 +789,81 @@ export async function getVisitCount(environment: 'PROD' | 'TEST' = 'PROD'): Prom
       .eq('environment', environment)
       .single();
 
-    if (error) {
-      console.error('Error getting visit count:', error);
-      return 0;
-    }
-
+    if (error) return 0;
     return data?.count || 0;
   } catch (err) {
-    console.error('Exception getting visit count:', err);
     return 0;
   }
 }
+
+/*
+══════════════════════════════════════════════════════════════
+SQL A EJECUTAR EN SUPABASE (SQL Editor)
+══════════════════════════════════════════════════════════════
+
+-- 1. Tabla de log de visitas individuales (IP + día + environment)
+CREATE TABLE IF NOT EXISTS visit_log (
+  ip          TEXT        NOT NULL,
+  visit_date  DATE        NOT NULL,
+  environment TEXT        NOT NULL DEFAULT 'PROD',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (ip, visit_date, environment)
+);
+
+-- 2. Tabla de totales (una fila por environment)
+CREATE TABLE IF NOT EXISTS visit_counter (
+  environment  TEXT        PRIMARY KEY,
+  count        BIGINT      NOT NULL DEFAULT 0,
+  last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed inicial si no existe
+INSERT INTO visit_counter (environment, count)
+VALUES ('PROD', 0), ('TEST', 0)
+ON CONFLICT (environment) DO NOTHING;
+
+-- 3. Función RPC atómica: registra visita si es nueva (IP+día), incrementa contador
+CREATE OR REPLACE FUNCTION register_visit(
+  p_ip   TEXT,
+  p_date DATE,
+  p_env  TEXT
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_new  BOOLEAN := FALSE;
+  v_total BIGINT;
+BEGIN
+  -- Intentar insertar. Si ya existe (PK duplicada) → no hacer nada.
+  INSERT INTO visit_log (ip, visit_date, environment)
+  VALUES (p_ip, p_date, p_env)
+  ON CONFLICT (ip, visit_date, environment) DO NOTHING;
+
+  -- GET DIAGNOSTICS devuelve cuántas filas se insertaron realmente
+  GET DIAGNOSTICS v_new = ROW_COUNT;
+
+  IF v_new > 0 THEN
+    -- Es una visita nueva: incrementar el contador total
+    INSERT INTO visit_counter (environment, count, last_updated)
+    VALUES (p_env, 1, NOW())
+    ON CONFLICT (environment)
+    DO UPDATE SET
+      count        = visit_counter.count + 1,
+      last_updated = NOW();
+  END IF;
+
+  -- Devolver el total actualizado
+  SELECT count INTO v_total FROM visit_counter WHERE environment = p_env;
+  RETURN COALESCE(v_total, 0);
+END;
+$$;
+
+-- 4. RLS: la función usa SECURITY DEFINER, así que los clientes anon
+--    pueden llamarla sin necesitar permisos directos en las tablas.
+--    Pero igualmente concedemos execute para el rol anon:
+GRANT EXECUTE ON FUNCTION register_visit(TEXT, DATE, TEXT) TO anon;
+
+══════════════════════════════════════════════════════════════
+*/

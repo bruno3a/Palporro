@@ -1,6 +1,6 @@
 
 export const PILOTS: string[] = [
-  'Slayer', 'Ledex', 'TheSmokeSeller', 'Piculia', 'Ale', 'Matias', 'ElectroRural'
+  'Slayer', 'Ledex', 'Smokeseller', 'Piculia', 'Ale', 'Matias', 'K-T-E'
 ];
 
 export const INITIAL_TRACKS = [
@@ -22,7 +22,7 @@ export const ANALYSIS_SYSTEM_INSTRUCTION = `
 Eres el Comisario Deportivo y Analista de Palporro Racing. 
 Tu tarea es analizar los datos de Assetto Corsa y generar DOS cosas:
 
-1. REPORTE ESTILO RADIO: Un texto corto (máximo 100 palabras) escrito como un boletín informativo de radio argentina de los 90. 
+1. REPORTE ESTILO RADIO: Un texto corto (máximo 40 palabras) escrito como un boletín informativo de radio argentina de los 90. 
    Usa urgencia, drama, y jerga fierrera argentina. Ej: "¡Atención boxes! Escándalo en Spa, Slayer se mandó una maniobra digna de cárcel..."
    
 2. DATOS DE TABLA: Extrae los puntos, cuántas carreras corrió cada uno y cuántas incidencias tuvieron.
