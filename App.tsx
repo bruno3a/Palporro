@@ -63,6 +63,20 @@ const App: React.FC = () => {
     || (window as any).__PALPORRO_CONFIG?.VITE_GEMINI_API_KEY
     || '';
 
+  const [introState, setIntroState] = useState<'gate' | 'playing' | 'done'>(() => {
+    try {
+      // Si el usuario eligió no volver a ver → saltar para siempre
+      if (localStorage.getItem('palporro_intro_skip') === '1') return 'done';
+      // Si ya lo vio esta sesión → saltar esta sesión
+      if (sessionStorage.getItem('palporro_intro_seen') === '1') return 'done';
+      return 'gate';
+    } catch(e) { return 'gate'; }
+  });
+  const [introSkipForever, setIntroSkipForever] = useState<boolean>(() => {
+    try { return localStorage.getItem('palporro_intro_skip') === '1'; } catch(e) { return false; }
+  });
+  const [bgAudioUrl] = useState('/intro-bg.mp3'); // archivo de voz en /public
+  const bgAudioRef = useRef<HTMLAudioElement | null>(null);
   // Agregar estos estados PRIMERO
   const [debugMode, setDebugMode] = useState(false);
   const [forceVotingActive, setForceVotingActive] = useState(false);
@@ -1796,7 +1810,90 @@ ${metricsInput.trim()}`;
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-red-600 overflow-x-hidden" style={{ cursor: "url('/GTR34.webp'), auto" }}>
       <div className="fixed inset-0 pointer-events-none opacity-[0.03] bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
+      {/* INTRO - gate de click + video con audio + voz de fondo posterior */}
+      {introState !== 'done' && (
+        <div className="fixed inset-0 z-[200] bg-black flex items-center justify-center">
 
+          {introState === 'gate' && (
+            <button
+              onClick={() => setIntroState('playing')}
+              className="flex flex-col items-center gap-6 group"
+            >
+              <div className="w-24 h-24 rounded-full border-2 border-red-600 flex items-center justify-center shadow-[0_0_60px_rgba(220,38,38,0.5)] group-hover:shadow-[0_0_80px_rgba(220,38,38,0.8)] transition-all duration-300">
+                <svg className="w-10 h-10 text-red-600 ml-1" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M3 22v-20l18 10-18 10z" />
+                </svg>
+              </div>
+              <span className="text-zinc-500 text-xs font-black uppercase tracking-[0.4em]">
+                Tocar para iniciar
+              </span>
+
+              {/* Checkbox "no volver a mostrar" en la pantalla de gate */}
+              <label
+                className="flex items-center gap-2 mt-2 cursor-pointer"
+                onClick={e => e.stopPropagation()}
+              >
+                <input
+                  type="checkbox"
+                  checked={introSkipForever}
+                  onChange={e => {
+                    const val = e.target.checked;
+                    setIntroSkipForever(val);
+                    try { 
+                      val 
+                        ? localStorage.setItem('palporro_intro_skip', '1') 
+                        : localStorage.removeItem('palporro_intro_skip');
+                    } catch(err) {}
+                  }}
+                  className="w-4 h-4 accent-red-600"
+                />
+                <span className="text-zinc-600 text-[10px] font-bold uppercase tracking-widest">
+                  No volver a mostrar
+                </span>
+              </label>
+            </button>
+          )}
+
+          {introState === 'playing' && (
+            <>
+              <video
+                autoPlay
+                playsInline
+                onEnded={() => {
+                  try { sessionStorage.setItem('palporro_intro_seen', '1'); } catch(e) {}
+                  setIntroState('done');
+                  // Iniciar voz de fondo al cerrar el video
+                  if (bgAudioRef.current) {
+                    bgAudioRef.current.volume = 0.5;
+                    bgAudioRef.current.play().catch(() => {});
+                  }
+                }}
+                className="w-full h-full object-cover"
+              >
+                <source src="/intro.mp4" type="video/mp4" />
+              </video>
+
+              <button
+                onClick={() => {
+                  try { sessionStorage.setItem('palporro_intro_seen', '1'); } catch(e) {}
+                  setIntroState('done');
+                  // Iniciar voz de fondo también al saltar
+                  if (bgAudioRef.current) {
+                    bgAudioRef.current.volume = 0.5;
+                    bgAudioRef.current.play().catch(() => {});
+                  }
+                }}
+                className="absolute bottom-8 right-8 px-4 py-2 bg-zinc-900/80 border border-zinc-700 text-zinc-400 text-xs font-black uppercase tracking-widest rounded-xl hover:bg-zinc-800 transition-all"
+              >
+                Saltar →
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Audio de fondo - se activa después del video */}
+      <audio ref={bgAudioRef} src="/intro-bg.mp3" preload="auto" />
       <header className="w-full bg-zinc-900 border-b border-zinc-800 p-2 sticky top-0 z-50 shadow-2xl backdrop-blur-xl bg-opacity-95">
         <div className="max-w-[1600px] mx-auto flex justify-between items-center px-2 md:px-4">
           <div className="flex items-center gap-2 md:gap-6">

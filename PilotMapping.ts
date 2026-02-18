@@ -17,7 +17,7 @@ export interface PilotMapping {
 export const PILOT_MAPPINGS: PilotMapping[] = [
   {
     appName: 'Electrorural',
-    acNames: ['K-T-E', 'k-t-e', 'KTE', 'kte', 'Electrorural', 'electrorural'],
+    acNames: ['K-T-E', 'k-t-e', 'KTE', 'kte', 'Electrorural', 'electrorural','ElectroRural'],
     primaryAcName: 'K-T-E'
   },
   {
