@@ -3163,7 +3163,78 @@ const wasDefinitiveRef = useRef(false);
                 </div>
               </div>
             </aside>
+            {/* PANEL DE ADMINISTRACIÓN */}
+            <aside className="lg:col-span-3 space-y-6">
+              <div className="bg-zinc-900 border border-zinc-800 p-10 rounded-[2.5rem] shadow-2xl sticky top-28">
+                <h3 className="text-red-600 font-black text-[13px] uppercase tracking-[0.4em] mb-10 border-b border-zinc-800 pb-5 italic">
+                  Administración
+                </h3>
+                <div className="space-y-5">
 
+                  {/* Sistema de Puntuación */}
+                  <div className="p-6 bg-zinc-950 rounded-2xl border border-zinc-800 space-y-3">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Sistema de Puntuación</p>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          setScoringSystem(1);
+                          try { localStorage.setItem('palporro_scoring_system', '1'); } catch(e) {}
+                        }}
+                        className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all ${
+                          scoringSystem === 1
+                            ? 'bg-red-600 text-white shadow-lg shadow-red-900/40'
+                            : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700'
+                        }`}
+                      >
+                        Sistema 1
+                      </button>
+                      <button
+                        onClick={() => {
+                          setScoringSystem(2);
+                          try { localStorage.setItem('palporro_scoring_system', '2'); } catch(e) {}
+                        }}
+                        className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all ${
+                          scoringSystem === 2
+                            ? 'bg-red-600 text-white shadow-lg shadow-red-900/40'
+                            : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700'
+                        }`}
+                      >
+                        Sistema 2
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-zinc-600 leading-relaxed">
+                      {scoringSystem === 1
+                        ? 'S1: Lineal. Último=1pt, +1 por posición. Bonus vuelta rápida al acumular 2 o 4.'
+                        : 'S2: P1=floor(N×1.5)pt, resto lineal hasta 1. Bonus vuelta rápida al acumular 2 o 4.'}
+                    </p>
+                  </div>
+
+                  {/* Re-randomizar pista */}
+                  <div className="p-6 bg-zinc-950 rounded-2xl border border-zinc-800 space-y-3">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Próxima Pista</p>
+                    <p className="text-[11px] text-zinc-400 font-bold">
+                      {(nextTrackIndex !== -1 && tracks[nextTrackIndex]) ? tracks[nextTrackIndex].name : 'Pendiente de votación'}
+                    </p>
+                    <button
+                      onClick={async () => {
+                        const environment = getEnvironment();
+                        await pinNextTrack(null, environment);
+                        const chosenIdx = pickRandomNextTrack(tracks, raceHistory);
+                        const chosenName = tracks[chosenIdx]?.name;
+                        if (chosenName) {
+                          await pinNextTrack(chosenName, environment);
+                          setNextTrackIndex(chosenIdx);
+                        }
+                      }}
+                      className="w-full py-3 rounded-xl font-black text-xs uppercase bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white transition-all"
+                    >
+                      🎲 Re-randomizar
+                    </button>
+                  </div>
+
+                </div>
+              </div>
+            </aside>
             <section className="lg:col-span-6 bg-zinc-900 border border-zinc-800 rounded-[3rem] p-10 shadow-2xl">
               <div className="mb-8 border-b border-zinc-800 pb-6">
                 <h2 className="text-[13px] font-black uppercase tracking-[0.3em] text-zinc-400 flex items-center gap-3 italic mb-2">
