@@ -152,6 +152,10 @@ const App: React.FC = () => {
     timestamp: Date;
   }>>([]);
 
+  const [scoringSystem, setScoringSystem] = useState<1 | 2>(() => {
+    try { return localStorage.getItem('palporro_scoring_system') === '2' ? 2 : 1; }
+    catch(e) { return 1; }
+  });
   // Floating player controls
   const [isFloatingMinimized, setIsFloatingMinimized] = useState(() => {
     // En mobile (ancho < 768px), iniciar minimizado para no tapar el footer
@@ -892,10 +896,8 @@ ${metricsInput.trim()}`;
     console.log('=== ACTUALIZANDO STANDINGS ===');
     console.log('Resultados recibidos:', results);
 
-    // Helper: parse lap time strings into milliseconds for reliable comparison
     const parseLapTime = (t?: string): number | null => {
       if (!t) return null;
-      // Common formats: "1:23.456", "83.456" or "1:23" or "01:23.456"
       try {
         const trimmed = String(t).trim();
         if (trimmed.includes(':')) {
@@ -912,7 +914,6 @@ ${metricsInput.trim()}`;
       }
     };
 
-    // Encontrar la mejor vuelta (menor tiempo en ms) y su piloto
     const bestLapEntry = results
       .filter(r => r.bestLap && !r.isNoShow)
       .map(r => ({ pilot: r.pilot, raw: r.bestLap, ms: parseLapTime(r.bestLap) }))
@@ -923,21 +924,21 @@ ${metricsInput.trim()}`;
     const bestLapPilot = bestLapEntry ? bestLapEntry.pilot : null;
     console.log('Mejor vuelta de la carrera:', bestLapTime);
 
+    const totalPositions = results.filter(r => !r.isNoShow).length;
+
     // Actualizar estado local
     const updatedStandings = await new Promise<Standing[]>((resolve) => {
       setStandings(prev => {
         const updated = [...prev];
 
         results.forEach(result => {
-          // Find or add pilot
           let pilotIndex = updated.findIndex(s => s.pilot === result.pilot);
           if (pilotIndex === -1) {
-            console.log(`⚠️ Piloto ${result.pilot} no encontrado en standings — lo agrego automáticamente`);
-            updated.push({ pilot: result.pilot, points: 0, racesRun: 0, lastResult: 'N/A', incidences: 0, wins: 0 });
+            console.log(`⚠️ Piloto ${result.pilot} no encontrado — lo agrego`);
+            updated.push({ pilot: result.pilot, points: 0, racesRun: 0, lastResult: 'N/A', incidences: 0, wins: 0, fastestLaps: 0 });
             pilotIndex = updated.length - 1;
           }
 
-          // Calcular puntos para no-shows
           if (result.isNoShow) {
             console.log(`❌ ${result.pilot} - NO SHOW: -1 punto`);
             updated[pilotIndex] = {
@@ -950,41 +951,50 @@ ${metricsInput.trim()}`;
             return;
           }
 
-          // Calcular puntos según posición (último: 1pt, incrementa hacia el podio)
-          const totalPositions = results.filter(r => !r.isNoShow).length;
-          const positionPoints = Math.max(1, totalPositions - (result.position || 0) + 1);
+          let positionPoints: number;
+          if (scoringSystem === 2) {
+            positionPoints = result.position === 1
+              ? Math.floor(totalPositions * 1.5)
+              : Math.max(1, totalPositions - (result.position || 0) + 1);
+          } else {
+            positionPoints = Math.max(1, totalPositions - (result.position || 0) + 1);
+          }
 
-          // Punto adicional por mejor vuelta (comparar por piloto para evitar diferencias de formato)
-          const fastestLapPoint = bestLapPilot && result.pilot === bestLapPilot ? 1 : 0;
+          const isFastest = bestLapPilot === result.pilot;
+          const prevFL = updated[pilotIndex].fastestLaps || 0;
+          const newFL = prevFL + (isFastest ? 1 : 0);
+          let fastestLapBonus = 0;
+          if (isFastest) {
+            if (newFL === 2) fastestLapBonus = 1;
+            else if (newFL === 4) fastestLapBonus = 2;
+          }
 
-          // Total de puntos de esta carrera
-          const racePoints = positionPoints + fastestLapPoint;
+          const racePoints = positionPoints + fastestLapBonus;
 
-          console.log(`✅ ${result.pilot} (P${result.position}):`, {
-            totalPositions,
-            positionPoints,
-            fastestLapPoint: fastestLapPoint ? '🏁 +1' : '',
-            totalRacePoints: racePoints
+          console.log(`✅ ${result.pilot} (P${result.position}) [S${scoringSystem}]:`, {
+            totalPositions, positionPoints,
+            fastestLaps: `${prevFL}→${newFL}`,
+            fastestLapBonus: fastestLapBonus ? `🏁 +${fastestLapBonus}` : '',
+            racePoints
           });
 
-          // Actualizar piloto (incluyendo lastResult para todas las posiciones)
           updated[pilotIndex] = {
             ...updated[pilotIndex],
             points: (updated[pilotIndex].points || 0) + racePoints,
             racesRun: (updated[pilotIndex].racesRun || 0) + 1,
             lastResult: `P${result.position}`,
             incidences: (updated[pilotIndex].incidences || 0) + (result.incidents || 0),
-            wins: (updated[pilotIndex].wins || 0) + (result.position === 1 ? 1 : 0)
+            wins: (updated[pilotIndex].wins || 0) + (result.position === 1 ? 1 : 0),
+            fastestLaps: newFL
           };
         });
 
-        // Ordenar por puntos
         const sorted = updated.sort((a, b) => b.points - a.points);
-        console.log('Standings actualizados:', sorted.map(s => ({ pilot: s.pilot, points: s.points })));
+        console.log('Standings:', sorted.map(s => ({ pilot: s.pilot, points: s.points, fl: s.fastestLaps })));
         resolve(sorted);
         return sorted;
       });
-    });
+    }); // ← cierre correcto del await new Promise
 
     // Guardar en Supabase
     try {
@@ -995,7 +1005,8 @@ ${metricsInput.trim()}`;
         races_run: s.racesRun,
         last_result: s.lastResult,
         incidences: s.incidences,
-        wins: s.wins || 0
+        wins: s.wins || 0,
+        fastest_laps: s.fastestLaps || 0
       }));
       console.log('📤 Guardando en Supabase:', standingsToSave);
       const saved = await upsertStandings(standingsToSave, env);
@@ -1022,14 +1033,16 @@ ${metricsInput.trim()}`;
     }
 
     setIsSubmittingVote(true);
+    const rawPilot = votingState.userPilot!;
+    const canonicalPilot = normalizeAcNameToApp(rawPilot) ?? rawPilot;
+
     const voteData: VoteData = {
       slots: votingState.selectedSlots,
-      pilot: votingState.userPilot!,
+      pilot: canonicalPilot,
       timestamp: Date.now(),
       ip: undefined,
-      // ✅ Incluir la pista actual para que quede vinculada al voto
-      track_name: (nextTrackIndex !== -1 && tracks[nextTrackIndex]) 
-        ? tracks[nextTrackIndex].name 
+      track_name: (nextTrackIndex !== -1 && tracks[nextTrackIndex])
+        ? tracks[nextTrackIndex].name
         : undefined
     };
 
@@ -1068,7 +1081,7 @@ ${metricsInput.trim()}`;
 
     // Filtrar votos anteriores del mismo piloto y agregar el nuevo
     const updatedVotes = [
-      ...votingState.allVotes.filter(v => v.pilot !== votingState.userPilot),
+      ...votingState.allVotes.filter(v => v.pilot !== canonicalPilot),
       voteData
     ];
     
@@ -1850,7 +1863,8 @@ const wasDefinitiveRef = useRef(false);
             points: s.points,
             racesRun: s.races_run,
             lastResult: s.last_result,
-            incidences: s.incidences
+            incidences: s.incidences,
+            fastestLaps: s.fastest_laps || 0
           }));
           setStandings(standings);
           console.log('Standings loaded from Supabase:', standings);
@@ -2281,7 +2295,26 @@ const wasDefinitiveRef = useRef(false);
                       </button>
                     </div>
                   </div>
-
+                  <div className="flex items-center justify-between p-3 bg-zinc-950 rounded-xl">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-xs font-bold text-zinc-300">Sistema de Puntuación</span>
+                    <span className="text-[10px] text-zinc-600">
+                      {scoringSystem === 1 ? 'S1: Lineal' : 'S2: P1 ×1.5'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const next: 1 | 2 = scoringSystem === 1 ? 2 : 1;
+                      setScoringSystem(next);
+                      try { localStorage.setItem('palporro_scoring_system', String(next)); } catch(e) {}
+                    }}
+                    className={`px-4 py-2 rounded-lg font-black text-xs transition-all ${
+                      scoringSystem === 2 ? 'bg-red-600 text-white' : 'bg-zinc-800 text-zinc-400'
+                    }`}
+                  >
+                    S{scoringSystem}
+                  </button>
+                </div>
                   <button
                    onClick={() => {
                      setVotingState({

@@ -1,6 +1,6 @@
 
 export const PILOTS: string[] = [
-  'Slayer', 'Ledex', 'Smokeseller', 'Piculia', 'Ale', 'Matias', 'K-T-E'
+  'Slayer', 'Ledex', 'Smokeseller', 'Piculia', 'Ale', 'Matias', 'K-T-E','JP'
 ];
 
 export const INITIAL_TRACKS = [

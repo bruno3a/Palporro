@@ -675,6 +675,7 @@ export interface StandingRecord {
   wins: number;
   environment: string;
   updated_at?: string;
+  fastest_laps?: number;
 }
 
 export const getStandings = async (
@@ -708,6 +709,7 @@ export const upsertStandings = async (
     incidences: s.incidences,
     wins: s.wins || 0,
     environment,
+    fastest_laps: s.fastest_laps ?? 0,
     updated_at: new Date().toISOString()
   }));
 

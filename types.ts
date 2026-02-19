@@ -19,3 +19,13 @@ export enum ConnectionStatus {
   CONNECTED = 'CONNECTED',
   ERROR = 'ERROR'
 }
+
+export interface Standing {
+  pilot: string;
+  points: number;
+  lastResult: string;
+  racesRun: number;
+  incidences: number;
+  wins?: number;
+  fastestLaps?: number; // ✅ contador acumulado de mejores vueltas en la temporada
+}

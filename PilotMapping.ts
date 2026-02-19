@@ -33,13 +33,13 @@ export const PILOT_MAPPINGS: PilotMapping[] = [
   // Agregar más pilotos aquí siguiendo el mismo patrón
   {
     appName: 'Smokeseller',
-    acNames: ['Martin Solimo', 'Martin Sólimo', 'Martin'],
+    acNames: ['Martin Solimo', 'Martin Sólimo', 'Martin', 'TheSmokeSeller', 'thesmokeseller', 'Smokeseller', 'smokeseller','SmokeSeller'],
     primaryAcName: 'Smokeseller'
   },
   {
-    appName: 'Nico',
-    acNames: ['Nico', 'nico', 'NICO'],
-    primaryAcName: 'Nico'
+    appName: 'JP',
+    acNames: ['JP', 'Juan Pablo', 'juan pablo'],
+    primaryAcName: 'JP'
   },
   {
     appName: 'Fede',
