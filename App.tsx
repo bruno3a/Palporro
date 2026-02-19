@@ -34,7 +34,7 @@ interface VotingState {
   allVotes: VoteData[];
 }
 
-const VOTING_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves'];
+const VOTING_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'];
 const VOTING_TIMES = ['18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '22:00', '22:30', '23:00'];
 
 const App: React.FC = () => {
@@ -1201,7 +1201,8 @@ ${metricsInput.trim()}`;
       'Lunes': 1,
       'Martes': 2,
       'Miércoles': 3,
-      'Jueves': 4
+      'Jueves': 4,
+      'Viernes': 5
     };
 
     // Use Argentina timezone when computing the next occurrence so "día siguiente" is relative
