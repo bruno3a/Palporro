@@ -122,6 +122,7 @@ export interface VoteData {
   slots: TimeSlot[];
   ip?: string | null;
   timestamp: number;
+  track_name?: string | null; // ✅ agregar
 }
 
 // Obtener todos los votos
@@ -203,7 +204,8 @@ export async function addVote(
           slots: voteData.slots,
           ip: voteData.ip || null,
           timestamp: voteData.timestamp,
-          environment
+          environment,
+          track_name: voteData.track_name ?? null // ✅ agregar
         }, {
           onConflict: 'pilot,environment'
         });
@@ -224,7 +226,8 @@ export async function addVote(
         slots: voteData.slots,
         ip: voteData.ip || null,
         timestamp: voteData.timestamp,
-        environment
+        environment,
+        track_name: voteData.track_name ?? null
       };
 
       const resp = await fetch(url, {

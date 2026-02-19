@@ -64,6 +64,7 @@ const App: React.FC = () => {
     || (window as any).__PALPORRO_CONFIG?.VITE_GEMINI_API_KEY
     || '';
 
+  
   const [introState, setIntroState] = useState<'gate' | 'playing' | 'done'>(() => {
     try {
       // Si el usuario eligió no volver a ver → saltar para siempre
@@ -1025,7 +1026,11 @@ ${metricsInput.trim()}`;
       slots: votingState.selectedSlots,
       pilot: votingState.userPilot!,
       timestamp: Date.now(),
-      ip: undefined
+      ip: undefined,
+      // ✅ Incluir la pista actual para que quede vinculada al voto
+      track_name: (nextTrackIndex !== -1 && tracks[nextTrackIndex]) 
+        ? tracks[nextTrackIndex].name 
+        : undefined
     };
 
     // Best-effort: fetch public IP first so it's sent with the vote
@@ -1275,7 +1280,42 @@ ${metricsInput.trim()}`;
     availability: hasDay ? (hasTime ? 'confirmed' : 'partial') : 'unavailable'
   };
 };
-
+  const notifyRaceConfirmed = async (data: {
+    trackName: string;
+    date: Date;
+    day: string;
+    time: string;
+    pilots: string[];
+    raceNumber: number;
+  }) => {
+    const webhookUrl = import.meta.env.VITE_N8N_WEBHOOK_URL
+      || (window as any).__PALPORRO_CONFIG?.VITE_N8N_WEBHOOK_URL
+      || '';
+    if (!webhookUrl) {
+      console.warn('⚠️ VITE_N8N_WEBHOOK_URL no configurada');
+      return;
+    }
+    try {
+      console.log('📡 Llamando webhook n8n...', webhookUrl);
+      await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          evento: 'carrera_confirmada',
+          carrera: data.raceNumber,
+          pista: data.trackName,
+          fecha: data.date.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' }),
+          dia: data.day,
+          hora: data.time,
+          pilotos: data.pilots,
+          pilotos_count: data.pilots.length
+        })
+      });
+      console.log('✅ Webhook n8n notificado');
+    } catch (err) {
+      console.warn('⚠️ No se pudo notificar webhook n8n:', err);
+    }
+  };
   // Función para guardar la carrera actual en el historial y resetear votación
   const archiveCurrentRaceAndReset = async () => {
     const nextRace = getNextRaceInfo();
@@ -1318,6 +1358,14 @@ ${metricsInput.trim()}`;
       console.error('Error al archivar carrera en Supabase — continuaré con el reseteo local de votación para evitar bloqueo semanal');
     } else {
       console.log('Carrera archivada exitosamente en Supabase');
+      await notifyRaceConfirmed({
+        trackName,
+        date: nextRace.date,
+        day: nextRace.day,
+        time: nextRace.time,
+        pilots: confirmedPilots,
+        raceNumber
+      });
     }
 
     // Intentar mover votos actuales a la tabla histórica (race_votes) y eliminar
@@ -1381,6 +1429,38 @@ ${metricsInput.trim()}`;
     }
   };
     
+  // Detectar cuando la fecha se confirma (isDefinitive cambia a true) y notificar webhook
+const wasDefinitiveRef = useRef(false);
+  useEffect(() => {
+    const nextRace = getNextRaceInfo();
+    if (!nextRace) {
+      wasDefinitiveRef.current = false;
+      return;
+    }
+    if (nextRace.isDefinitive && !wasDefinitiveRef.current) {
+      // Acaba de confirmarse la fecha → llamar webhook
+      wasDefinitiveRef.current = true;
+      const trackName = (nextTrackIndex !== -1 && tracks[nextTrackIndex])
+        ? tracks[nextTrackIndex].name
+        : tracks[0]?.name || 'Sin pista';
+      const confirmedPilots = votingState.allVotes
+        .filter(v => (v.slots || []).some(s => s.day === nextRace.day && s.time === nextRace.time))
+        .map(v => v.pilot);
+      notifyRaceConfirmed({
+        trackName,
+        date: nextRace.date,
+        day: nextRace.day,
+        time: nextRace.time,
+        pilots: confirmedPilots,
+        raceNumber: completedCount + 1
+      });
+    } else if (!nextRace.isDefinitive) {
+      // Resetear para la próxima vez
+      wasDefinitiveRef.current = false;
+    }
+  }, [votingState.allVotes]);
+
+
   // Archivar carrera y resetear votación cuando:
   // 1. La fecha confirmada ya pasó, O
   // 2. Es sábado después de las 18:00 (cierre de semana de votación)
@@ -1461,6 +1541,17 @@ ${metricsInput.trim()}`;
       if (userIp) {
         const existingVote = votes.find(v => v.ip === userIp);
         if (existingVote) {
+          // ✅ Verificar que el piloto siga siendo válido en PILOTS
+          const pilotIsValid = PILOTS.includes(existingVote.pilot);
+          const storedPilot = localStorage.getItem('palporro_user_pilot');
+          const resolvedPilot: string | null = pilotIsValid
+            ? existingVote.pilot
+            : (storedPilot && PILOTS.includes(storedPilot) ? storedPilot : null);
+          
+          if (resolvedPilot && resolvedPilot !== existingVote.pilot) {
+            // Nombre viejo en BD → actualizar en Supabase con el nombre correcto
+            await addVote({ ...existingVote, pilot: resolvedPilot }, environment);
+          }
           console.log('Voto existente encontrado por IP:', existingVote.pilot);
           localStorage.setItem('palporro_user_pilot', existingVote.pilot);
           const uniqDays = Array.from(new Set((existingVote.slots || []).map(s => s.day)));
@@ -1940,18 +2031,17 @@ ${metricsInput.trim()}`;
             </div>
           </div>
           <nav className="flex gap-0.5 md:gap-1 bg-zinc-950 p-0.5 md:p-1 rounded-lg md:rounded-xl border border-zinc-800 shadow-inner">
-            <button onClick={() => setActiveTab('dashboard')} className={`px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'dashboard' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'}`}>
-              PORTADA
-            </button>
-            <button onClick={() => setActiveTab('radio')} className={`px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'radio' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'}`}>
-              RADIO
-            </button>
-            <button onClick={() => setShowHistoryModal(true)} className={`px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'history' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'} items-center gap-1 md:gap-2`}>
-              <svg className="w-3 h-3 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-              </svg>
+            <button onClick={() => setActiveTab('dashboard')} className={`px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'dashboard' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'}`}>PORTADA</button>
+            <button onClick={() => setActiveTab('radio')} className={`px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'radio' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'}`}>RADIO</button>
+            <button onClick={() => setShowHistoryModal(true)} className={`flex items-center gap-1 md:gap-2 px-2 md:px-4 lg:px-6 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg ${activeTab === 'history' ? 'bg-zinc-100 text-zinc-950 shadow-xl' : 'text-zinc-500'}`}>
+              <svg className="w-3 h-3 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
               ARCHIVO ({displayedHistory.length})
             </button>
+            <div className="w-px bg-zinc-800 mx-0.5 md:mx-1 self-stretch" />
+            <a href="/Reglamento.pdf" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 md:gap-1.5 px-2 md:px-4 lg:px-5 py-1.5 md:py-2.5 text-[8px] md:text-[10px] font-black uppercase transition-all rounded-lg text-zinc-500 hover:text-white hover:bg-red-600/20 group">
+              <svg className="w-3 h-3 md:w-3.5 md:h-3.5 text-red-600 group-hover:text-red-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+              REGLAMENTO
+            </a>
           </nav>
         </div>
       </header>
