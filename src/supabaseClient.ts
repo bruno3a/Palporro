@@ -709,6 +709,7 @@ export interface StandingRecord {
   id?: string;
   pilot: string;
   points: number;
+  points_basic?: number;  // S2 Básico: solo pilotos que corrieron ≥60% (a partir de 3 carreras)
   races_run: number;
   last_result: string;
   incidences: number;
@@ -744,6 +745,7 @@ export const upsertStandings = async (
   const records = standings.map(s => ({
     pilot: s.pilot,
     points: s.points,
+    points_basic: s.points_basic ?? 0,
     races_run: s.races_run,
     last_result: s.last_result,
     incidences: s.incidences,
@@ -960,7 +962,14 @@ $$;
 --    Pero igualmente concedemos execute para el rol anon:
 GRANT EXECUTE ON FUNCTION register_visit(TEXT, DATE, TEXT) TO anon;
 
--- 5. Función RPC para limpiar votos de un environment (SECURITY DEFINER)
+-- 5. Nueva columna points_basic en standings + migración de datos históricos:
+-- ALTER TABLE standings ADD COLUMN IF NOT EXISTS points_basic INTEGER NOT NULL DEFAULT 0;
+--
+-- Migración: los puntos históricos en `points` son el cálculo básico (todos los pilotos
+-- frecuentes), copiarlos a points_basic para que queden sincronizados:
+-- UPDATE standings SET points_basic = points WHERE points_basic = 0 AND points > 0;
+
+-- 6. Función RPC para limpiar votos de un environment (SECURITY DEFINER)
 --    Necesaria porque el anon key no puede hacer DELETE directo si RLS está activo.
 --    Supabase RLS silencia el DELETE devolviendo 0 filas borradas sin error.
 --

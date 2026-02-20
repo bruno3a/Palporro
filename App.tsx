@@ -126,7 +126,7 @@ const App: React.FC = () => {
 
   const [metricsInput, setMetricsInput] = useState("");
   const [analysis, setAnalysis] = useState("");
-  const [standings, setStandings] = useState<Standing[]>(PILOTS.map(p => ({ pilot: p, points: 0, lastResult: 'N/A', racesRun: 0, incidences: 0 })));
+  const [standings, setStandings] = useState<Standing[]>(PILOTS.map(p => ({ pilot: p, points: 0, pointsBasic: 0, lastResult: 'N/A', racesRun: 0, incidences: 0 })));
   const getArtisticName = (realName: string) => {
     // Deterministic pick by hashing the realName so it stays consistent across renders
     let h = 0;
@@ -154,9 +154,17 @@ const App: React.FC = () => {
   }>>([]);
   const [directText, setDirectText] = useState('');
 
+  // Sistema de puntuación — admin lo controla desde el panel de radio
+  // Afecta solo el cálculo al cargar resultados, no la visualización de usuarios
   const [scoringSystem, setScoringSystem] = useState<1 | 2>(() => {
-    try { return localStorage.getItem('palporro_scoring_system') === '2' ? 2 : 1; }
-    catch(e) { return 1; }
+    try { return localStorage.getItem('palporro_scoring_system') === '1' ? 1 : 2; }
+    catch(e) { return 2; }
+  });
+  // Subsistema del Sistema 2: 'basic' (solo pilotos ≥60% carreras) o 'inclusive' (todos)
+  // 'basic' es el default
+  const [s2SubSystem, setS2SubSystem] = useState<'basic' | 'inclusive'>(() => {
+    try { return localStorage.getItem('palporro_s2_subsystem') === 'inclusive' ? 'inclusive' : 'basic'; }
+    catch(e) { return 'basic'; }
   });
   // Floating player controls
   const [isFloatingMinimized, setIsFloatingMinimized] = useState(() => {
@@ -947,11 +955,12 @@ ${metricsInput.trim()}`;
       setStandings(prev => {
         const updated = [...prev];
 
+        // ── Paso 1: actualizar carreras corridas y puntos del Sistema Inclusivo (S2) ──
         results.forEach(result => {
           let pilotIndex = updated.findIndex(s => s.pilot === result.pilot);
           if (pilotIndex === -1) {
             console.log(`⚠️ Piloto ${result.pilot} no encontrado — lo agrego`);
-            updated.push({ pilot: result.pilot, points: 0, racesRun: 0, lastResult: 'N/A', incidences: 0, wins: 0, fastestLaps: 0 });
+            updated.push({ pilot: result.pilot, points: 0, pointsBasic: 0, racesRun: 0, lastResult: 'N/A', incidences: 0, wins: 0, fastestLaps: 0 });
             pilotIndex = updated.length - 1;
           }
 
@@ -1005,8 +1014,66 @@ ${metricsInput.trim()}`;
           };
         });
 
+        // ── Paso 2: calcular S2 Básico en paralelo ──
+        // Solo aplica cuando scoringSystem === 2. Si es S1, pointsBasic = points.
+        if (scoringSystem === 2) {
+          // Total de carreras corridas = max racesRun entre todos los pilotos
+          const totalRacesRun = Math.max(...updated.map(s => s.racesRun || 0), 0);
+
+          // Umbral: solo aplica a partir de 3 carreras corridas
+          const thresholdActive = totalRacesRun >= 3;
+
+          // Pilotos que califican: corrieron ≥60% de las carreras totales
+          const qualifies = (s: any) =>
+            !thresholdActive || ((s.racesRun || 0) / totalRacesRun) >= 0.6;
+
+          // Recalcular pointsBasic desde cero usando los resultados de todas las carreras
+          // Para esta carrera: reasignar puntos solo entre pilotos que califican,
+          // subiendo posiciones a quienes sí califican cuando alguien no califica.
+          // Estrategia: tomar los resultados no-noshow, filtrar quienes califican,
+          // reasignar posiciones 1..N entre ellos y calcular puntos con la misma escala.
+          const finishers = results.filter(r => !r.isNoShow).sort((a, b) => (a.position || 99) - (b.position || 99));
+          const qualifiedFinishers = finishers.filter(r => {
+            const s = updated.find(u => u.pilot === r.pilot);
+            return s ? qualifies(s) : false;
+          });
+          const qualifiedCount = qualifiedFinishers.length;
+
+          qualifiedFinishers.forEach((result, adjustedIdx) => {
+            const pilotIndex = updated.findIndex(s => s.pilot === result.pilot);
+            if (pilotIndex === -1) return;
+
+            const adjustedPosition = adjustedIdx + 1; // posición re-rankeada entre clasificados
+            const basicPositionPoints = adjustedPosition === 1
+              ? Math.floor(qualifiedCount * 1.5)
+              : Math.max(1, qualifiedCount - adjustedIdx);
+
+            const isFastest = bestLapPilot === result.pilot;
+            const fl = updated[pilotIndex].fastestLaps || 0;
+            let flBonus = 0;
+            if (isFastest) {
+              if (fl === 2) flBonus = 1;
+              else if (fl === 4) flBonus = 2;
+            }
+
+            const basicRacePoints = basicPositionPoints + flBonus;
+            console.log(`🔵 [S2-Básico] ${result.pilot} P${result.position}→P${adjustedPosition}: +${basicRacePoints}pts`);
+
+            updated[pilotIndex] = {
+              ...updated[pilotIndex],
+              pointsBasic: (updated[pilotIndex].pointsBasic || 0) + basicRacePoints
+            };
+          });
+
+          // Pilotos que NO califican quedan con pointsBasic sin sumar (0 en esta carrera)
+          console.log(`🔵 [S2-Básico] Umbral activo: ${thresholdActive}, total carreras: ${totalRacesRun}, clasificados: ${qualifiedCount}/${finishers.length}`);
+        } else {
+          // S1: pointsBasic = points (sin distinción)
+          updated.forEach((s, i) => { updated[i] = { ...s, pointsBasic: s.points }; });
+        }
+
         const sorted = updated.sort((a, b) => b.points - a.points);
-        console.log('Standings:', sorted.map(s => ({ pilot: s.pilot, points: s.points, fl: s.fastestLaps })));
+        console.log('Standings:', sorted.map(s => ({ pilot: s.pilot, points: s.points, pointsBasic: s.pointsBasic, fl: s.fastestLaps })));
         resolve(sorted);
         return sorted;
       });
@@ -1018,6 +1085,7 @@ ${metricsInput.trim()}`;
       const standingsToSave = updatedStandings.map(s => ({
         pilot: s.pilot,
         points: s.points,
+        points_basic: s.pointsBasic ?? 0,
         races_run: s.racesRun,
         last_result: s.lastResult,
         incidences: s.incidences,
@@ -1939,10 +2007,11 @@ const wasDefinitiveRef = useRef(false);
         const savedStandings = await getStandings(env);
         
         if (savedStandings && savedStandings.length > 0) {
-          // Convertir de StandingRecord a Standing
+          // Convertir de StandingRecord a Standing (incluyendo points_basic)
           const standings = savedStandings.map(s => ({
             pilot: s.pilot,
             points: s.points,
+            pointsBasic: (s as any).points_basic ?? 0,
             racesRun: s.races_run,
             lastResult: s.last_result,
             incidences: s.incidences,
@@ -2377,26 +2446,7 @@ const wasDefinitiveRef = useRef(false);
                       </button>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between p-3 bg-zinc-950 rounded-xl">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-xs font-bold text-zinc-300">Sistema de Puntuación</span>
-                    <span className="text-[10px] text-zinc-600">
-                      {scoringSystem === 1 ? 'S1: Lineal' : 'S2: P1 ×1.5'}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const next: 1 | 2 = scoringSystem === 1 ? 2 : 1;
-                      setScoringSystem(next);
-                      try { localStorage.setItem('palporro_scoring_system', String(next)); } catch(e) {}
-                    }}
-                    className={`px-4 py-2 rounded-lg font-black text-xs transition-all ${
-                      scoringSystem === 2 ? 'bg-red-600 text-white' : 'bg-zinc-800 text-zinc-400'
-                    }`}
-                  >
-                    S{scoringSystem}
-                  </button>
-                </div>
+
                   <button
                    onClick={() => {
                      setVotingState({
@@ -2711,11 +2761,22 @@ const wasDefinitiveRef = useRef(false);
             {/* 2. Clasificación y Tour */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
               <section className="lg:col-span-8 bg-zinc-900 border border-zinc-800 rounded-[2rem] overflow-hidden shadow-2xl flex flex-col">
-                <div className="bg-gradient-to-r from-zinc-800 to-zinc-900 p-6 border-b border-zinc-700 flex justify-between items-center">
+                <div className="bg-gradient-to-r from-zinc-800 to-zinc-900 p-6 border-b border-zinc-700 flex flex-wrap justify-between items-center gap-3">
                   <h2 className="text-[14px] font-black uppercase tracking-[0.2em] flex items-center gap-4 italic text-zinc-100">
                     <div className="w-2 h-6 bg-red-600 shadow-[0_0_15px_rgba(220,38,38,0.7)]"></div>
                     Clasificación Palporro Febrero 26
                   </h2>
+                  {/* Selector S2 Básico / S2 Inclusivo — visible para todos */}
+                  <div className="flex items-center gap-1 bg-zinc-950 rounded-xl p-1 border border-zinc-700">
+                    <button
+                      onClick={() => { setS2SubSystem('basic'); try { localStorage.setItem('palporro_s2_subsystem', 'basic'); } catch(e) {} }}
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${s2SubSystem === 'basic' ? 'bg-red-600 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >Básico</button>
+                    <button
+                      onClick={() => { setS2SubSystem('inclusive'); try { localStorage.setItem('palporro_s2_subsystem', 'inclusive'); } catch(e) {} }}
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${s2SubSystem === 'inclusive' ? 'bg-red-600 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'}`}
+                    >Inclusivo</button>
+                  </div>
                 </div>
                 <div className="overflow-x-auto flex-1">
                   <table className="w-full text-left min-w-[600px]">
@@ -2725,33 +2786,41 @@ const wasDefinitiveRef = useRef(false);
                         <th className="px-3 md:px-6 py-5 font-black">Piloto</th>
                         <th className="px-3 md:px-6 py-5 font-black text-center" title="Grandes Premios">GP</th>
                         <th className="px-3 md:px-6 py-5 font-black text-center" title="Incidencias">INC</th>
+                        <th className="px-3 md:px-6 py-5 font-black text-center" title="Mejores Vueltas">FL</th>
                         <th className="px-3 md:px-6 py-5 font-black text-right" title="Puntos">PTS</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-800/20">
-                      {standings.sort((a,b) => b.points - a.points).map((s, idx) => (
-                        <tr key={s.pilot} className="group hover:bg-zinc-800/30 transition-all cursor-crosshair">
-                          <td className="px-3 md:px-6 py-4 md:py-6 text-[10px] md:text-[12px] font-mono text-zinc-700 font-black italic">#{idx + 1}</td>
-                          <td className="px-3 md:px-6 py-4 md:py-6"><div className="text-[13px] md:text-[16px] font-black uppercase italic group-hover:text-red-500 transition-colors flex items-center gap-2 md:gap-3">{s.pilot}{idx === 0 && <span className="text-[7px] md:text-[8px] bg-red-600 text-white px-1.5 md:px-2 py-0.5 rounded italic font-black">P1</span>}
-                            {(() => {
-                              const nextRace = getNextRaceInfo();
-                              const pilotVote = (votingState.allVotes ?? []).find(v => v.pilot === s.pilot);
-                              const isConfirmed = nextRace && nextRace.isDefinitive && pilotVote && ((pilotVote.slots ?? []) as any).some((ss: any) => ss.day === nextRace.day && ss.time === nextRace.time);
-                              const isTentative = !!pilotVote && !isConfirmed;
-                              if (isConfirmed) {
-                                return (<span className="ml-2 px-2 py-0.5 text-[9px] font-black rounded bg-green-600 text-white">Confirmado</span>);
-                              }
-                              if (isTentative) {
-                                return (<span className="ml-2 px-2 py-0.5 text-[9px] font-black rounded bg-yellow-600 text-black">Tentativo</span>);
-                              }
-                              return null;
-                            })()}
-                          </div><div className="text-[9px] md:text-[10px] text-zinc-500 uppercase font-black mt-1 opacity-60">{s.lastResult}</div></td>
-                          <td className="px-3 md:px-6 py-4 md:py-6 text-center text-[11px] md:text-[13px] font-mono font-black text-zinc-500">{s.racesRun}</td>
-                          <td className="px-3 md:px-6 py-4 md:py-6 text-center text-[11px] md:text-[13px] font-mono font-black text-red-900 group-hover:text-red-600">{s.incidences}</td>
-                          <td className="px-3 md:px-6 py-4 md:py-6 text-right font-black text-red-600 text-xl md:text-3xl tabular-nums">{s.points}</td>
-                        </tr>
-                      ))}
+                      {(() => {
+                        // Ordenar según el subsistema activo
+                        const primaryPoints = (s: any) => s2SubSystem === 'basic'
+                          ? (s.pointsBasic ?? 0)
+                          : s.points;
+                        return [...standings].sort((a, b) => primaryPoints(b) - primaryPoints(a)).map((s, idx) => (
+                          <tr key={s.pilot} className="group hover:bg-zinc-800/30 transition-all cursor-crosshair">
+                            <td className="px-3 md:px-6 py-4 md:py-6 text-[10px] md:text-[12px] font-mono text-zinc-700 font-black italic">#{idx + 1}</td>
+                            <td className="px-3 md:px-6 py-4 md:py-6"><div className="text-[13px] md:text-[16px] font-black uppercase italic group-hover:text-red-500 transition-colors flex items-center gap-2 md:gap-3">{s.pilot}{idx === 0 && <span className="text-[7px] md:text-[8px] bg-red-600 text-white px-1.5 md:px-2 py-0.5 rounded italic font-black">P1</span>}
+                              {(() => {
+                                const nextRace = getNextRaceInfo();
+                                const pilotVote = (votingState.allVotes ?? []).find(v => v.pilot === s.pilot);
+                                const isConfirmed = nextRace && nextRace.isDefinitive && pilotVote && ((pilotVote.slots ?? []) as any).some((ss: any) => ss.day === nextRace.day && ss.time === nextRace.time);
+                                const isTentative = !!pilotVote && !isConfirmed;
+                                if (isConfirmed) return (<span className="ml-2 px-2 py-0.5 text-[9px] font-black rounded bg-green-600 text-white">Confirmado</span>);
+                                if (isTentative) return (<span className="ml-2 px-2 py-0.5 text-[9px] font-black rounded bg-yellow-600 text-black">Tentativo</span>);
+                                return null;
+                              })()}
+                            </div><div className="text-[9px] md:text-[10px] text-zinc-500 uppercase font-black mt-1 opacity-60">{s.lastResult}</div></td>
+                            <td className="px-3 md:px-6 py-4 md:py-6 text-center text-[11px] md:text-[13px] font-mono font-black text-zinc-500">{s.racesRun}</td>
+                            <td className="px-3 md:px-6 py-4 md:py-6 text-center text-[11px] md:text-[13px] font-mono font-black text-red-900 group-hover:text-red-600">{s.incidences}</td>
+                            <td className="px-3 md:px-6 py-4 md:py-6 text-center text-[11px] md:text-[13px] font-mono font-black text-yellow-600">
+                              {(s.fastestLaps || 0) > 0 ? `🏁 ${s.fastestLaps}` : <span className="text-zinc-700">—</span>}
+                            </td>
+                            <td className="px-3 md:px-6 py-4 md:py-6 text-right font-black text-red-600 text-xl md:text-3xl tabular-nums">
+                              {s2SubSystem === 'basic' ? (s.pointsBasic ?? 0) : s.points}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
                     </tbody>
                   </table>
                 </div>
@@ -2766,8 +2835,12 @@ const wasDefinitiveRef = useRef(false);
                       <span className="text-zinc-400">Incidencias</span>
                     </div>
                     <div className="flex items-center gap-2">
+                      <span className="text-zinc-500">FL:</span>
+                      <span className="text-zinc-400">Mejores Vueltas</span>
+                    </div>
+                    <div className="flex items-center gap-2">
                       <span className="text-zinc-500">PTS:</span>
-                      <span className="text-zinc-400">Puntos</span>
+                      <span className="text-zinc-400">Puntos {s2SubSystem === 'basic' ? 'S2 Básico' : 'S2 Inclusivo'}</span>
                     </div>
                   </div>
                 </div>
@@ -3265,41 +3338,23 @@ const wasDefinitiveRef = useRef(false);
                 </h3>
                 <div className="space-y-5">
 
-                  {/* Sistema de Puntuación */}
+                  {/* Sistema de Puntuación — solo admin, afecta el cálculo al cargar resultados */}
                   <div className="p-6 bg-zinc-950 rounded-2xl border border-zinc-800 space-y-3">
                     <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Sistema de Puntuación</p>
                     <div className="flex gap-3">
                       <button
-                        onClick={() => {
-                          setScoringSystem(1);
-                          try { localStorage.setItem('palporro_scoring_system', '1'); } catch(e) {}
-                        }}
-                        className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all ${
-                          scoringSystem === 1
-                            ? 'bg-red-600 text-white shadow-lg shadow-red-900/40'
-                            : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700'
-                        }`}
-                      >
-                        Sistema 1
-                      </button>
+                        onClick={() => { setScoringSystem(1); try { localStorage.setItem('palporro_scoring_system', '1'); } catch(e) {} }}
+                        className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all ${scoringSystem === 1 ? 'bg-red-600 text-white shadow-lg shadow-red-900/40' : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700'}`}
+                      >Sistema 1</button>
                       <button
-                        onClick={() => {
-                          setScoringSystem(2);
-                          try { localStorage.setItem('palporro_scoring_system', '2'); } catch(e) {}
-                        }}
-                        className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all ${
-                          scoringSystem === 2
-                            ? 'bg-red-600 text-white shadow-lg shadow-red-900/40'
-                            : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700'
-                        }`}
-                      >
-                        Sistema 2
-                      </button>
+                        onClick={() => { setScoringSystem(2); try { localStorage.setItem('palporro_scoring_system', '2'); } catch(e) {} }}
+                        className={`flex-1 py-3 rounded-xl font-black text-xs uppercase transition-all ${scoringSystem === 2 ? 'bg-red-600 text-white shadow-lg shadow-red-900/40' : 'bg-zinc-800 text-zinc-500 hover:bg-zinc-700'}`}
+                      >Sistema 2</button>
                     </div>
                     <p className="text-[10px] text-zinc-600 leading-relaxed">
                       {scoringSystem === 1
                         ? 'S1: Lineal. Último=1pt, +1 por posición. Bonus vuelta rápida al acumular 2 o 4.'
-                        : 'S2: P1=floor(N×1.5)pt, resto lineal hasta 1. Bonus vuelta rápida al acumular 2 o 4.'}
+                        : 'S2: P1=floor(N×1.5)pt, resto lineal hasta 1. Bonus vuelta rápida al acumular 2 o 4 FL.'}
                     </p>
                   </div>
 
