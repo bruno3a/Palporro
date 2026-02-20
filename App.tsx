@@ -151,6 +151,7 @@ const App: React.FC = () => {
     audioUrl: string;
     timestamp: Date;
   }>>([]);
+  const [directText, setDirectText] = useState('');
 
   const [scoringSystem, setScoringSystem] = useState<1 | 2>(() => {
     try { return localStorage.getItem('palporro_scoring_system') === '2' ? 2 : 1; }
@@ -2922,7 +2923,7 @@ const wasDefinitiveRef = useRef(false);
                     return (
                       <React.Fragment key={t.name}>
                         {/* Mostrar "Pendiente de votación" justo antes de la primera pista no completada */}
-                        {isFirstIncomplete && !hasVotes && nextTrackIndex !== -1 && (
+                        {isFirstIncomplete && !hasVotes && (
                           <div className="w-full p-6 rounded-xl border-2 bg-gradient-to-br from-red-950/40 to-zinc-900/40 border-red-600/70 shadow-xl shadow-red-900/20 flex flex-col items-center justify-center relative overflow-hidden">
                             <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[2px_0_15px_rgba(220,38,38,1)]"></div>
                             <div className="absolute inset-0 bg-gradient-to-r from-red-600/5 to-transparent pointer-events-none"></div>
@@ -3255,6 +3256,39 @@ const wasDefinitiveRef = useRef(false);
                   <div className="w-4 h-4 bg-red-600/20 border border-red-600 rotate-45"></div>
                   Estudio de Locución
                 </h2>
+              </div>
+
+              {/* Emisión directa de texto */}
+              <div className="p-6 bg-zinc-950/60 border-2 border-zinc-700 rounded-2xl space-y-4">
+                <label className="text-[10px] font-black uppercase text-zinc-500 tracking-widest block">
+                  Emitir Texto Directo
+                </label>
+                <textarea
+                  value={directText}
+                  onChange={(e) => setDirectText(e.target.value)}
+                  placeholder="Escribí el texto exacto que querés emitir..."
+                  className="w-full bg-zinc-900 border-2 border-zinc-800 rounded-xl p-5 text-zinc-100 font-bold text-[13px] leading-relaxed focus:outline-none focus:border-red-600 transition-all min-h-[100px] resize-none"
+                />
+                <button
+                  onClick={() => {
+                    if (!directText.trim()) return;
+                    // Inyectar directamente como script activo
+                    const idx = scripts.length;
+                    setScripts(prev => [...prev, directText.trim()]);
+                    setActiveScriptIdx(idx);
+                  }}
+                  disabled={!directText.trim()}
+                  className="w-full bg-zinc-700 hover:bg-zinc-600 disabled:opacity-30 text-white font-black py-4 rounded-xl uppercase text-[11px] tracking-widest transition-all flex items-center justify-center gap-3"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  Cargar como Guion
+                </button>
+              </div>
+
+              <div className="border-t border-zinc-800 pt-2">
+                <p className="text-[9px] font-black uppercase text-zinc-700 tracking-widest text-center">— o generá con IA —</p>
               </div>
 
               <div className="space-y-8">
