@@ -1048,8 +1048,9 @@ ${metricsInput.trim()}`;
     }
 
     setIsSubmittingVote(true);
+    try {
     const rawPilot = votingState.userPilot!;
-    const canonicalPilot = normalizeAcNameToApp(rawPilot) ?? rawPilot;
+    const canonicalPilot = rawPilot;
 
     const voteData: VoteData = {
       slots: votingState.selectedSlots,
@@ -1061,15 +1062,18 @@ ${metricsInput.trim()}`;
         : undefined
     };
 
-    // Best-effort: fetch public IP first so it's sent with the vote
+    // Best-effort: fetch public IP with timeout (no bloquear el submit si falla)
     try {
-      const resp = await fetch('https://api.ipify.org?format=json');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const resp = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
+      clearTimeout(timeoutId);
       if (resp.ok) {
         const j = await resp.json();
         voteData.ip = j.ip;
       }
     } catch (e) {
-      // ignore failures to obtain IP
+      // ignore: IP es opcional, no bloquear el voto
     }
 
     // Use the centralized getEnvironment() so all voting operations use
@@ -1109,6 +1113,11 @@ ${metricsInput.trim()}`;
     setVotingState(newState);
     localStorage.setItem('palporro_voting', JSON.stringify(newState));
     setIsSubmittingVote(false);
+    } catch (err) {
+      console.error('handleVoteSubmit error inesperado:', err);
+      alert('Error inesperado al votar. Por favor intentá de nuevo.');
+      setIsSubmittingVote(false);
+    }
   };
 
   // Easter egg: single click on the FiaScore shows a fun toast and attempts to play a short sound
@@ -1542,28 +1551,34 @@ const wasDefinitiveRef = useRef(false);
     const environment = getEnvironment();
 
     const loadVotes = async () => {
-      // 1. Obtener IP
-      let userIp: string | undefined;
-      try {
-        const resp = await fetch('https://api.ipify.org?format=json');
-        if (resp.ok) {
-          const j = await resp.json();
-          userIp = j.ip;
-        }
-      } catch (e) {
-        console.warn('No se pudo obtener IP');
-      }
-
-      // 2. Cargar votos relevantes para la próxima carrera (filtrado local)
-      //    usando la nueva función getRelevantVotes para ignorar votos viejos
-      const votes = await (async () => {
+      // 1. Obtener IP con timeout corto (NO bloquear la carga de votos)
+      const getIpWithTimeout = async (): Promise<string | undefined> => {
         try {
-          return await getRelevantVotes(environment);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3000);
+          const resp = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (resp.ok) {
+            const j = await resp.json();
+            return j.ip as string;
+          }
         } catch (e) {
-          // Fallback al comportamiento anterior si la import falla
-          return await getVotes(environment);
+          console.warn('No se pudo obtener IP (timeout o error)');
         }
-      })();
+        return undefined;
+      };
+
+      // 2. Cargar votos e IP en PARALELO — la IP nunca bloquea los votos
+      const [votes, userIp] = await Promise.all([
+        (async () => {
+          try {
+            return await getRelevantVotes(environment);
+          } catch (e) {
+            return await getVotes(environment);
+          }
+        })(),
+        getIpWithTimeout()
+      ]);
 
       // 3. Si tenemos IP, buscar si ya votó desde esta IP
       if (userIp) {
@@ -2592,12 +2607,12 @@ const wasDefinitiveRef = useRef(false);
 
               <button
                 onClick={handleVoteSubmit}
-                disabled={isSubmittingVote}
-                className={`w-full p-4 font-black rounded-lg uppercase text-sm tracking-widest transition-all disabled:opacity-60 ${
-                  pendingVoteChange ? 'bg-red-700 text-white hover:bg-red-800' : (votingState.hasVoted ? 'bg-zinc-700 text-zinc-300 cursor-default' : 'bg-red-600 text-white hover:bg-red-700')
+                disabled={isSubmittingVote || (votingState.hasVoted && !pendingVoteChange)}
+                className={`w-full p-4 font-black rounded-lg uppercase text-sm tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  pendingVoteChange ? 'bg-red-700 text-white hover:bg-red-800 cursor-pointer' : (votingState.hasVoted ? 'bg-zinc-700 text-zinc-300' : 'bg-red-600 text-white hover:bg-red-700 cursor-pointer')
                 }`}
               >
-                {pendingVoteChange ? 'Confirmar cambios' : (votingState.hasVoted ? 'Votaste! Gracias' : 'Votar!')}
+                {isSubmittingVote ? 'Guardando...' : (pendingVoteChange ? 'Confirmar cambios' : (votingState.hasVoted ? 'Votaste! Gracias' : 'Votar!'))}
               </button>
             </div>
           </div>
