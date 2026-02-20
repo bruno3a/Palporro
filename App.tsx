@@ -555,8 +555,8 @@ ${metricsInput.trim()}`;
       const ai = new GoogleGenAI({ apiKey: geminiKey });
 
       // Preparar instrucciones de estilo (persona) para cada voz
-      const femaleInstruction = `Habla como una mujer locutora de radio nocturna argentina, especializada en automovilismo. Voz de mujer, tono grave y sedoso; transmití seguridad, experiencia y pasión por los motores. Ritmo acelerado y cadencioso, sensual pero sobrio; sin exageraciones. Usá modismos argentinos suaves y naturales (ej.: \"che\", \"piola\"), sin caricatura.`;
-      const maleInstruction = `Actuá como un hombre porteño, con poco conocimiento técnico de autos y mucho cinismo. Tono irónico, humor seco y pausado. Mantené un acento rioplatense leve. Evitá tecnicismos y mostrale al oyente duda y sarcasmo sutil.`;
+      const femaleInstruction = `Habla como una mujer locutora de radio nocturna argentina, especializada en automovilismo. Voz de mujer, tono agudo y sedoso; transmití seguridad, experiencia y pasión por los motores. Ritmo acelerado y cadencioso, sensual pero sobrio; sin exageraciones. Usá modismos argentinos suaves y naturales (ej.: \"che\", \"piola\"), sin caricatura.`;
+      const maleInstruction = `Sos un locutor de radio AM argentino, estilo deportivo clásico. Ritmo rápido y dinámico, voz grave y proyectada, con energía constante. Pronunciación clara y precisa, acento rioplatense natural. Entusiasmo genuino por el automovilismo, sin sonar artificial ni robótico. Usá el ritmo acelerado propio de los narradores deportivos argentinos.`;
 
       const voiceInstruction = selectedVoice === 'Achernar' ? femaleInstruction : maleInstruction;
 
@@ -570,7 +570,7 @@ ${metricsInput.trim()}`;
           return `<speak><prosody rate=\"97%\" pitch=\"-2st\" volume=\"+1dB\">${escaped.replace(/\n\n/g, '<break time=\"260ms\"/>')}</prosody></speak>`;
         }
         // Voz masculina cínica
-        return `<speak><prosody rate=\"98%\" pitch=\"-0.5st\" volume=\"+0dB\">${escaped.replace(/\n\n/g, '<break time=\"200ms\"/>')}</prosody></speak>`;
+        return `<speak><prosody rate="115%" pitch="-1st" volume="+2dB">${escaped.replace(/\n\n/g, '<break time="150ms\"/>')}</prosody></speak>`;
       })();
 
       // Componer prompt: instrucción de estilo + SSML (el SDK/endpoint de TTS debe respetar SSML en input)
@@ -598,7 +598,7 @@ ${metricsInput.trim()}`;
         const audioBuffer = await decodeAudioData(rawPcm, ctx, 24000, 1);
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
-        source.playbackRate.value = 1.08; 
+        source.playbackRate.value = selectedVoice === 'Achernar' ? 1.05 : 1.12;
         source.connect(ctx.destination);
         source.onended = () => setIsPlayingTTS(false);
         source.start(0);
@@ -611,21 +611,35 @@ ${metricsInput.trim()}`;
     }
   };
 
-  const handleConfirmEmission = () => {
+  const handleConfirmEmission = async () => {
     if (!downloadUrl || !scripts[activeScriptIdx]) return;
-    
-    const newEmission = {
-      id: Date.now().toString(),
-      script: scripts[activeScriptIdx],
-      voice: VOICE_OPTIONS.find(v => v.id === selectedVoice)?.label || selectedVoice,
-      audioUrl: downloadUrl,
-      timestamp: new Date()
-    };
-    
-    const updatedHistory = [newEmission, ...emissionHistory];
-    setEmissionHistory(updatedHistory);
-    localStorage.setItem('palporro-emissions', JSON.stringify(updatedHistory));
-    setDownloadUrl(null);
+
+    try {
+      // Convertir blob URL a base64 para persistir en localStorage
+      const response = await fetch(downloadUrl);
+      const blob = await response.blob();
+      const base64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+
+      const newEmission = {
+        id: Date.now().toString(),
+        script: scripts[activeScriptIdx],
+        voice: VOICE_OPTIONS.find(v => v.id === selectedVoice)?.label || selectedVoice,
+        audioUrl: base64, // ✅ base64 en lugar de blob URL
+        timestamp: new Date()
+      };
+
+      const updatedHistory = [newEmission, ...emissionHistory];
+      setEmissionHistory(updatedHistory);
+      localStorage.setItem('palporro-emissions', JSON.stringify(updatedHistory));
+      setDownloadUrl(null);
+    } catch (err) {
+      console.error('Error guardando emisión:', err);
+      alert('Error al guardar la emisión.');
+    }
   };
 
   const handleDeleteEmission = (id: string) => {
