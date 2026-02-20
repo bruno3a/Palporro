@@ -79,6 +79,7 @@ const App: React.FC = () => {
   });
   const [bgAudioUrl] = useState('/intro-bg.mp3'); // archivo de voz en /public
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
   // Agregar estos estados PRIMERO
   const [debugMode, setDebugMode] = useState(false);
   const [forceVotingActive, setForceVotingActive] = useState(false);
@@ -1614,6 +1615,20 @@ const wasDefinitiveRef = useRef(false);
           const timeCount: Record<string, number> = {};
           votes.forEach(v => (v.slots || []).forEach(s => { dayCount[s.day] = (dayCount[s.day] || 0) + 1; timeCount[s.time] = (timeCount[s.time] || 0) + 1; }));
           setVotingStats({ totalVotes: votes.length, dayCount, timeCount });
+
+          // Si hay votos pero no hay pista fijada, asignar una
+          if (votes.length > 0) {
+            const currentPinned = await getPinnedTrack(environment);
+            if (!currentPinned) {
+              const chosenIdx = pickRandomNextTrack(tracks, raceHistory);
+              const chosenName = tracks[chosenIdx]?.name;
+              if (chosenName) {
+                console.log('🎯 Asignando pista (path IP) sin pista fijada:', chosenName);
+                await pinNextTrack(chosenName, environment);
+                setNextTrackIndex(chosenIdx);
+              }
+            }
+          }
           return;
         }
       }
@@ -1625,6 +1640,22 @@ const wasDefinitiveRef = useRef(false);
       const timeCount: Record<string, number> = {};
       votes.forEach(v => (v.slots || []).forEach(s => { dayCount[s.day] = (dayCount[s.day] || 0) + 1; timeCount[s.time] = (timeCount[s.time] || 0) + 1; }));
       setVotingStats({ totalVotes: votes.length, dayCount, timeCount });
+
+      // Si hay votos pero no hay pista fijada, asignar una ahora.
+      // Esto cubre el caso en que los votos se resetearon pero nadie volvió a
+      // abrir la app en tiempo real para recibir la notificación del primer voto.
+      if (votes.length > 0) {
+        const currentPinned = await getPinnedTrack(environment);
+        if (!currentPinned) {
+          const chosenIdx = pickRandomNextTrack(tracks, raceHistory);
+          const chosenName = tracks[chosenIdx]?.name;
+          if (chosenName) {
+            console.log('🎯 Asignando pista por votos existentes sin pista fijada:', chosenName);
+            await pinNextTrack(chosenName, environment);
+            setNextTrackIndex(chosenIdx);
+          }
+        }
+      }
     };
 
     loadVotes();
@@ -3248,7 +3279,10 @@ const wasDefinitiveRef = useRef(false);
                     <button
                       onClick={async () => {
                         const environment = getEnvironment();
+                        // Limpiar AMBOS: Supabase Y localStorage, antes de randomizar
+                        // De lo contrario pickRandomNextTrack lee el localStorage y devuelve la misma pista
                         await pinNextTrack(null, environment);
+                        localStorage.removeItem('palporro_next_track');
                         const chosenIdx = pickRandomNextTrack(tracks, raceHistory);
                         const chosenName = tracks[chosenIdx]?.name;
                         if (chosenName) {
@@ -3355,9 +3389,37 @@ const wasDefinitiveRef = useRef(false);
 
                 {/* Botón reproducir */}
                 <div className="flex gap-4">
-                  <button onClick={handlePlayTTS} disabled={isPlayingTTS || !scripts[activeScriptIdx]} className="flex-1 bg-red-600 text-white font-black py-6 rounded-2xl uppercase text-[12px] tracking-widest hover:bg-red-700 transition-all shadow-xl disabled:opacity-20 flex items-center justify-center gap-4 border-b-4 border-red-900">
-                    {isPlayingTTS ? <div className="animate-spin h-6 w-6 border-4 border-white border-t-transparent rounded-full" /> : <><svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Reproducir Emisión</>}
-                  </button>
+                  {downloadUrl ? (
+                    <>
+                      {/* Ya hay audio generado: reproducir sin regenerar */}
+                      <button
+                        onClick={() => {
+                          if (playbackAudioRef.current) {
+                            playbackAudioRef.current.pause();
+                            playbackAudioRef.current.currentTime = 0;
+                          }
+                          const audio = new Audio(downloadUrl);
+                          playbackAudioRef.current = audio;
+                          audio.play();
+                        }}
+                        className="flex-1 bg-zinc-700 text-white font-black py-6 rounded-2xl uppercase text-[12px] tracking-widest hover:bg-zinc-600 transition-all shadow-xl flex items-center justify-center gap-4 border-b-4 border-zinc-900"
+                      >
+                        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        Escuchar de nuevo
+                      </button>
+                      <button
+                        onClick={handlePlayTTS}
+                        disabled={isPlayingTTS || !scripts[activeScriptIdx]}
+                        className="flex-1 bg-red-600 text-white font-black py-6 rounded-2xl uppercase text-[12px] tracking-widest hover:bg-red-700 transition-all shadow-xl disabled:opacity-20 flex items-center justify-center gap-4 border-b-4 border-red-900"
+                      >
+                        {isPlayingTTS ? <div className="animate-spin h-6 w-6 border-4 border-white border-t-transparent rounded-full" /> : <><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Regenerar</>}
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={handlePlayTTS} disabled={isPlayingTTS || !scripts[activeScriptIdx]} className="flex-1 bg-red-600 text-white font-black py-6 rounded-2xl uppercase text-[12px] tracking-widest hover:bg-red-700 transition-all shadow-xl disabled:opacity-20 flex items-center justify-center gap-4 border-b-4 border-red-900">
+                      {isPlayingTTS ? <div className="animate-spin h-6 w-6 border-4 border-white border-t-transparent rounded-full" /> : <><svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Reproducir Emisión</>}
+                    </button>
+                  )}
                 </div>
 
                 {/* Botones de confirmar y descargar */}
@@ -3667,13 +3729,18 @@ const wasDefinitiveRef = useRef(false);
 
                             // ── Solo si es la PRIMERA vez que se cargan resultados ──
                             if (!hadResultsBefore) {
-                              // Mover votos a race_votes y limpiar palporro_votes
+                              // Mover votos a race_votes y limpiar palporro_votes.
+                              // IMPORTANTE: usar getVotes (todos) en lugar de getRelevantVotes,
+                              // porque getRelevantVotes filtra por próxima pista y devuelve []
+                              // si la pista ya cambió al momento de cargar resultados.
                               try {
-                                const votes = await getRelevantVotes(env);
+                                const votes = await getVotes(env);
                                 if (Array.isArray(votes) && votes.length > 0) {
                                   const moved = await moveVotesToRace(result.race!.id, votes, env);
-                                  if (moved) console.log('✅ Votos archivados en race_votes');
+                                  if (moved) console.log('✅ Votos archivados en race_votes:', votes.length);
                                   else console.warn('moveVotesToRace devolvió false');
+                                } else {
+                                  console.log('ℹ️ No había votos pendientes para archivar');
                                 }
                               } catch (e) {
                                 console.warn('No se pudieron mover los votos:', e);
