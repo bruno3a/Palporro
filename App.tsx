@@ -1113,6 +1113,22 @@ ${metricsInput.trim()}`;
 
     setVotingState(newState);
     localStorage.setItem('palporro_voting', JSON.stringify(newState));
+
+    // Si no hay pista asignada, asignarla ahora que hay al menos un voto
+    // Hacerlo acá (no en subscribeToVotes) para evitar problemas de closure
+    // con raceHistory/tracks desactualizados o filtros de cutoff en getRelevantVotes
+    const currentPinned = await getPinnedTrack(getEnvironment());
+    if (!currentPinned) {
+      const currentRaceHistory = await getRaceHistory(getEnvironment() as any);
+      const chosenIdx = pickRandomNextTrack(tracks, currentRaceHistory || raceHistory);
+      const chosenName = tracks[chosenIdx]?.name;
+      if (chosenName) {
+        console.log('🎯 [voto] Asignando pista:', chosenName);
+        await pinNextTrack(chosenName, getEnvironment());
+        setNextTrackIndex(chosenIdx);
+      }
+    }
+
     setIsSubmittingVote(false);
     } catch (err) {
       console.error('handleVoteSubmit error inesperado:', err);
@@ -1662,22 +1678,27 @@ const wasDefinitiveRef = useRef(false);
 
     // Suscribirse a cambios en tiempo real
     const unsubscribe = subscribeToVotes(environment, async (votes) => {
-      setVotingState(prev => {
-        // ✅ Si es el primer voto, elegir pista aleatoria y fijarla
-        if (prev.allVotes.length === 0 && votes.length > 0) {
-          const chosenIdx = pickRandomNextTrack(tracks, raceHistory);
-          const chosenName = tracks[chosenIdx]?.name;
-          if (chosenName) {
-            pinNextTrack(chosenName, getEnvironment()); // persiste para todos en Supabase
-            setNextTrackIndex(chosenIdx);
-          }
-        }
-        return { ...prev, allVotes: votes };
-      });
+      // Actualizar votos primero
+      setVotingState(prev => ({ ...prev, allVotes: votes }));
       const dayCount: Record<string, number> = {};
       const timeCount: Record<string, number> = {};
       votes.forEach((v: any) => (v.slots || []).forEach((s: any) => { dayCount[s.day] = (dayCount[s.day] || 0) + 1; timeCount[s.time] = (timeCount[s.time] || 0) + 1; }));
       setVotingStats({ totalVotes: votes.length, dayCount, timeCount });
+
+      // Si hay votos y no hay pista fijada → asignar nueva pista
+      // (cubre tanto el primer voto tras reset como recargas sin pista)
+      if (votes.length > 0) {
+        const currentPinned = await getPinnedTrack(environment);
+        if (!currentPinned) {
+          const chosenIdx = pickRandomNextTrack(tracks, raceHistory);
+          const chosenName = tracks[chosenIdx]?.name;
+          if (chosenName) {
+            console.log('🎯 [realtime] Asignando pista:', chosenName);
+            await pinNextTrack(chosenName, environment);
+            setNextTrackIndex(chosenIdx);
+          }
+        }
+      }
     });
 
     return () => unsubscribe();
@@ -2960,7 +2981,19 @@ const wasDefinitiveRef = useRef(false);
 })()}
                 </div>
                 <div className="space-y-3 overflow-y-auto max-h-[600px] pr-2 custom-scrollbar flex-1">
-                  {tracks.map((t, idx) => {
+                  {(() => {
+                    // Reordenar: completadas → próxima pista → resto pendientes
+                    const nextTrack = nextTrackIndex !== -1 ? tracks[nextTrackIndex] : null;
+                    const completed = tracks.filter(t => t.completed);
+                    const pending = tracks.filter(t => !t.completed && t !== nextTrack);
+                    const ordered = [
+                      ...completed,
+                      ...(nextTrack ? [nextTrack] : []),
+                      ...pending
+                    ];
+                    return ordered;
+                  })().map((t) => {
+                    const idx = tracks.indexOf(t);
                     const isNext = idx === nextTrackIndex;
                     const isTraining = idx === 0;
                     const hasVotes = votingState.allVotes.length > 0;
@@ -3734,31 +3767,46 @@ const wasDefinitiveRef = useRef(false);
                               // porque getRelevantVotes filtra por próxima pista y devuelve []
                               // si la pista ya cambió al momento de cargar resultados.
                               try {
+                                // Leer votos ANTES de archivarlos/borrarlos
                                 const votes = await getVotes(env);
+                                console.log('🗳️ Votos a archivar:', votes?.length ?? 0);
+
+                                // Archivar votos en race_votes y limpiar palporro_votes
                                 if (Array.isArray(votes) && votes.length > 0) {
                                   const moved = await moveVotesToRace(result.race!.id, votes, env);
                                   if (moved) console.log('✅ Votos archivados en race_votes:', votes.length);
-                                  else console.warn('moveVotesToRace devolvió false');
-                                } else {
-                                  console.log('ℹ️ No había votos pendientes para archivar');
+                                  else console.error('❌ moveVotesToRace devolvió false');
                                 }
-                              } catch (e) {
-                                console.warn('No se pudieron mover los votos:', e);
-                              }
 
-                              // Resetear estado de votación local
-                              try {
-                                const newVotingState = {
+                                // Resetear estado local
+                                setVotingState({
                                   isOpen: false,
                                   hasVoted: false,
                                   selectedSlots: [],
                                   selectedDays: [],
                                   selectedTimes: [],
-                                  userPilot: votingState.userPilot, // mantener piloto elegido
+                                  userPilot: votingState.userPilot,
                                   allVotes: []
-                                };
-                                setVotingState(newVotingState);
+                                });
                                 localStorage.removeItem('palporro_voting');
+                                localStorage.removeItem('palporro_next_track');
+
+                                // Resetear pista en Supabase
+                                await pinNextTrack(null, env);
+                                setNextTrackIndex(-1);
+                                console.log('✅ Pista reseteada en Supabase');
+
+                                // La pista se asignará automáticamente cuando llegue
+                                // el primer voto nuevo via subscribeToVotes (getPinnedTrack = null → asignar)
+                                // No hay votos frescos porque acaban de archivarse — es correcto.
+                                console.log('✅ Reset completo. Esperando votos para la siguiente pista.');
+
+                              } catch (e) {
+                                console.warn('Error en reset post-resultados:', e);
+                              }
+
+                              // Resetear estado de votación local
+                              try {
 
                                 // Resetear cutoff al inicio del domingo actual (semana nueva)
                                 const now = new Date();

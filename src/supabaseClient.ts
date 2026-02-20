@@ -472,18 +472,58 @@ export const moveVotesToRace = async (
       environment
     }));
 
+    // 1. Verificar que el race_id realmente existe en race_history antes de insertar
+    //    (evita FK violation si el ID es local/inválido)
+    const { data: raceCheck, error: raceCheckErr } = await client
+      .from('race_history')
+      .select('id')
+      .eq('id', raceId)
+      .maybeSingle();
+    if (raceCheckErr || !raceCheck) {
+      console.error('moveVotesToRace: race_id no encontrado en race_history — abortando', raceId, raceCheckErr);
+      return false;
+    }
+
+    // 2. Archivar en race_votes
     const { error: errArchive } = await client.from('race_votes').insert(toInsert);
-    if (errArchive) console.error('moveVotesToRace: Error inserting into race_votes:', errArchive);
+    if (errArchive) {
+      console.error('moveVotesToRace: Error inserting into race_votes:', errArchive);
+      // Si el INSERT falla, NO borrar de palporro_votes para no perder datos
+      // Intentar igualmente el DELETE para limpiar (los votos ya están "viejos")
+      // solo si el error NO es de FK (constraint) — en ese caso abortar
+      const isFkError = errArchive.code === '23503' || (errArchive.message || '').includes('foreign key');
+      if (isFkError) {
+        console.error('moveVotesToRace: FK violation — abortando para no perder votos');
+        return false;
+      }
+      // Para otros errores (duplicados, etc.) seguir igual con el DELETE
+      console.warn('moveVotesToRace: INSERT falló pero no es FK, intentando DELETE igual');
+    }
 
-    const pilots = votesToArchive.map(v => v.pilot);
-    const { error: errDel } = await client
-      .from('palporro_votes')
-      .delete()
-      .in('pilot', pilots)
-      .eq('environment', environment);
+    // 3. Limpiar TODOS los votos del environment via RPC (SECURITY DEFINER)
+    //    El anon key no tiene permiso de DELETE directo si RLS está activo —
+    //    el DELETE silenciosamente borra 0 filas sin devolver error.
+    //    La función RPC clear_votes_for_environment usa SECURITY DEFINER
+    //    para ejecutar el DELETE con permisos de superusuario.
+    const { error: errDel } = await client.rpc('clear_votes_for_environment', {
+      p_env: environment
+    });
 
-    if (errDel) console.error('moveVotesToRace: Error deleting palporro_votes:', errDel);
+    if (errDel) {
+      console.error('moveVotesToRace: Error en RPC clear_votes_for_environment:', errDel);
+      // Fallback: intentar DELETE directo por si la RPC no existe aún
+      const { error: errDelFallback } = await client
+        .from('palporro_votes')
+        .delete()
+        .eq('environment', environment);
+      if (errDelFallback) {
+        console.error('moveVotesToRace: Fallback DELETE también falló:', errDelFallback);
+        return false;
+      }
+      console.warn('moveVotesToRace: RPC no disponible, se usó DELETE directo (puede fallar con RLS)');
+    }
 
+    console.log('moveVotesToRace: OK — archivados:', toInsert.length, 'palporro_votes limpiada para env:', environment);
     return true;
   } catch (err) {
     console.error('moveVotesToRace error:', err);
@@ -919,6 +959,23 @@ $$;
 --    pueden llamarla sin necesitar permisos directos en las tablas.
 --    Pero igualmente concedemos execute para el rol anon:
 GRANT EXECUTE ON FUNCTION register_visit(TEXT, DATE, TEXT) TO anon;
+
+-- 5. Función RPC para limpiar votos de un environment (SECURITY DEFINER)
+--    Necesaria porque el anon key no puede hacer DELETE directo si RLS está activo.
+--    Supabase RLS silencia el DELETE devolviendo 0 filas borradas sin error.
+--
+--    EJECUTAR ESTO EN SUPABASE SQL EDITOR:
+CREATE OR REPLACE FUNCTION clear_votes_for_environment(p_env TEXT)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  DELETE FROM palporro_votes WHERE environment = p_env;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION clear_votes_for_environment(TEXT) TO anon;
 
 ══════════════════════════════════════════════════════════════
 */
