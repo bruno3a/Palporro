@@ -3550,7 +3550,7 @@ const wasDefinitiveRef = useRef(false);
           
           {/* Desarrollado por NeuraSur - Estilo Racing */}
           <a
-            href="https://neurasur.nextba.com"
+            href="https://neurasur.com"
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Desarrollado por NeuraSur"
