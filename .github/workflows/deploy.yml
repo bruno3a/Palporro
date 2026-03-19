@@ -49,12 +49,12 @@ jobs:
           };
           EOF
       - name: Add CNAME
-        run: echo "palporro.nextba.com" > dist/CNAME
+        run: echo "palporro.neurasur.com" > dist/CNAME
       - name: Setup Pages
         uses: actions/configure-pages@v4
       
       - name: Add CNAME
-        run: echo "palporro.nextba.com" > dist/CNAME
+        run: echo "palporro.neurasur.com" > dist/CNAME
       
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
